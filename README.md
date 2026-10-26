@@ -59,6 +59,13 @@ O binário final estará em `target/release/brain-tools`.
 
 ---
 
+## 📖 Documentação Detalhada de Conexão
+
+Para um passo a passo completo sobre como adicionar o servidor via **Claude Code CLI (`claude mcp add`)**, **Cursor (`.cursor/mcp.json`)**, **Claude Desktop** e **Cline**, consulte o guia dedicado:
+👉 [**Guia de Execução e Integração MCP**](file:///home/desktop/Documents/projects/brain_tools/docs/guia_de_execucao_e_integracao_mcp.md)
+
+---
+
 ## ⚙️ Configuração no Cliente MCP
 
 ### Claude Code (`~/.claude.json` ou flag `--mcp`)
