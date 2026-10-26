@@ -140,10 +140,7 @@ impl AstChunker {
                 return Some(node);
             }
 
-            match node.parent() {
-                Some(parent) => node = parent,
-                None => return None,
-            }
+            node = node.parent()?;
         }
     }
 

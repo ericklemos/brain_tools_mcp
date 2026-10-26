@@ -97,7 +97,7 @@ impl GraphBuilder {
             return Ok(true);
         }
 
-        let content = fs::read_to_string(path).map_err(|e| BrainError::Io(e))?;
+        let content = fs::read_to_string(path).map_err(BrainError::Io)?;
         let current_hash = blake3::hash(content.as_bytes());
 
         if let Some(existing_hash) = code_graph.file_hashes.get(path) {
@@ -160,7 +160,7 @@ impl GraphBuilder {
 
         let mut files = Vec::new();
         for entry in walker.build().filter_map(|e| e.ok()) {
-            if entry.file_type().map_or(false, |ft| ft.is_file()) {
+            if entry.file_type().is_some_and(|ft| ft.is_file()) {
                 let path = entry.path();
                 let path_str = path.to_string_lossy();
                 if !path_str.contains("/target/")
@@ -179,7 +179,7 @@ impl GraphBuilder {
     fn extract_definitions_from_file(
         &self,
         code_graph: &mut ProjectCodeGraph,
-        path: &PathBuf,
+        path: &Path,
         root_dir: &Path,
         content: &str,
         root_node: &Node,
@@ -234,7 +234,7 @@ impl GraphBuilder {
                     qualified_name: qualified_name.clone(),
                     name: symbol_name.clone(),
                     kind,
-                    file_path: path.clone(),
+                    file_path: path.to_path_buf(),
                     start_line: node.start_position().row + 1,
                     end_line: node.end_position().row + 1,
                     signature,
@@ -249,7 +249,7 @@ impl GraphBuilder {
                 code_graph.qualified_lookup.insert(qualified_name, node_idx);
                 code_graph
                     .file_nodes
-                    .entry(path.clone())
+                    .entry(path.to_path_buf())
                     .or_default()
                     .push(node_idx);
             }
@@ -261,7 +261,7 @@ impl GraphBuilder {
     fn extract_relations_from_file(
         &self,
         code_graph: &mut ProjectCodeGraph,
-        path: &PathBuf,
+        path: &Path,
         content: &str,
         root_node: &Node,
         lang: SupportedLanguage,
