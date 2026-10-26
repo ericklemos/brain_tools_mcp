@@ -2,11 +2,14 @@ use brain_graph::builder::GraphBuilder;
 use brain_graph::graph_tool::{GraphContextTool, GraphImpactTool, GraphHandler};
 use brain_graph::watcher::GraphWatcher;
 use brain_engine::ValidationClient;
+use brain_kernel::peek_tool::PeekTool;
+use brain_kernel::store::ResponseStore;
 use brain_kernel::{Config, Registry};
 use brain_search::SearchHandler;
 use brain_tools::mcp::server::McpServer;
 use clap::Parser;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -34,12 +37,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let validator = ValidationClient::new(resolved_model, config.gpu_layers);
-    let search_handler = Arc::new(SearchHandler::new(
-        &config.root_dir,
-        validator,
-        config.default_max_results,
-        config.default_min_confidence,
+    let store = Arc::new(ResponseStore::new(
+        Duration::from_secs(config.handle_ttl_secs),
+        config.handle_max_bytes,
     ));
+    let search_handler = Arc::new(
+        SearchHandler::new(
+            &config.root_dir,
+            validator,
+            config.default_max_results,
+            config.default_min_confidence,
+        )
+        .with_budget(store.clone(), config.default_budget_tokens),
+    );
 
     // Initialize in-memory CodeGraph and Watcher
     let graph_builder = Arc::new(GraphBuilder::new()?);
@@ -51,7 +61,10 @@ async fn main() -> anyhow::Result<()> {
         graph_builder.clone(),
     )?;
 
-    let graph_handler = Arc::new(GraphHandler::new(&config.root_dir, code_graph));
+    let graph_handler = Arc::new(
+        GraphHandler::new(&config.root_dir, code_graph)
+            .with_budget(store.clone(), config.default_budget_tokens),
+    );
 
     // Tools are plugins: adding one is a new crate type plus one register call.
     let mut registry = Registry::new();
@@ -63,6 +76,9 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
         .register(Arc::new(GraphImpactTool::new(graph_handler)))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(PeekTool::new(store, config.default_budget_tokens)))
         .map_err(|e| anyhow::anyhow!(e))?;
 
     let server = McpServer::new(Arc::new(registry));

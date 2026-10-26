@@ -17,6 +17,10 @@ pub fn brain_context_graph_tool() -> Tool {
                     "minimum": 1,
                     "maximum": 3,
                     "description": "Número de saltos no grafo de chamadas."
+                },
+                "budget_tokens": {
+                    "type": "integer",
+                    "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
                 }
             },
             "required": ["target_symbol_or_file"]
@@ -34,6 +38,10 @@ pub fn brain_impact_check_tool() -> Tool {
                 "symbol_name": {
                     "type": "string",
                     "description": "Nome da função, método ou struct que será modificada."
+                },
+                "budget_tokens": {
+                    "type": "integer",
+                    "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
                 }
             },
             "required": ["symbol_name"]

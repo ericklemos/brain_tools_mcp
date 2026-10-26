@@ -14,6 +14,7 @@ tree-sitter = { workspace = true }
 tree-sitter-rust = { workspace = true }
 tree-sitter-kotlin-ng = { workspace = true }
 tracing = { workspace = true }
+blake3 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

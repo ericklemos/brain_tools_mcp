@@ -35,6 +35,18 @@ pub struct Config {
     /// Default maximum results returned by brain_search
     #[arg(long, env = "BRAIN_MAX_RESULTS", default_value_t = 5)]
     pub default_max_results: usize,
+
+    /// Default approximate token budget for tool responses
+    #[arg(long, env = "BRAIN_BUDGET_TOKENS", default_value_t = 2000)]
+    pub default_budget_tokens: usize,
+
+    /// Seconds a truncated response stays recoverable via brain_peek
+    #[arg(long, env = "BRAIN_HANDLE_TTL_SECS", default_value_t = 1800)]
+    pub handle_ttl_secs: u64,
+
+    /// Total bytes the truncated-response store may hold
+    #[arg(long, env = "BRAIN_HANDLE_MAX_BYTES", default_value_t = 67_108_864)]
+    pub handle_max_bytes: usize,
 }
 
 impl Config {

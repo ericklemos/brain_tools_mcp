@@ -25,6 +25,10 @@ pub fn brain_search_tool() -> Tool {
                     "type": "number",
                     "default": 0.65,
                     "description": "Confiança mínima para aprovar um bloco de código (0.0 a 1.0)."
+                },
+                "budget_tokens": {
+                    "type": "integer",
+                    "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
                 }
             },
             "required": ["natural_query", "keywords"]

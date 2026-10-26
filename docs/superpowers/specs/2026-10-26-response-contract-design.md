@@ -167,9 +167,19 @@ os 2.
 - **Compatibilidade:** com `budget_tokens` alto, as saídas das três ferramentas atuais
   são idênticas às de hoje; os testes de integração existentes continuam verdes com os
   mesmos asserts de conteúdo.
-- **Mudança de teste consciente:** `brain_search_integration_test.rs:68` e
-  `graph_tools_test.rs:72` afirmam `tools.len() == 3`. Passam a afirmar `4`, incluindo
-  `brain_peek`. É a única alteração permitida no intent desses testes.
+- **Correção ao plano original:** `brain_search_integration_test.rs:68` e
+  `graph_tools_test.rs:72` montam o `BrainToolDispatcher` legado, que registra
+  deliberadamente só as três ferramentas antigas — não o binário. Continuam afirmando
+  `3`. Só `daemon_smoke_test.rs`, que exercita o binário real, passa a afirmar `4`
+  incluindo `brain_peek`.
+- **Teste E2E no binário** (`response_contract_test.rs`): busca estourada devolve
+  envelope; o handle resolve; `brain_peek` devolve o corpo omitido com
+  `Restante: 0 caracteres`; handle desconhecido é erro. O teste roda o child dentro do
+  diretório-sandbox porque o daemon procura `./models` e um GGUF carregado altera quais
+  candidatos sobrevivem.
+- **Sensibilidade do E2E verificada por mutação:** subir o orçamento para 100000 faz o
+  teste falhar em `expected a truncation envelope`, provando que ele mede o orçamento e
+  não passa por acaso.
 
 ## Decisões e riscos
 

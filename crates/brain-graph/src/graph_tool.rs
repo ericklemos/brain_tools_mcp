@@ -1,5 +1,7 @@
+use brain_kernel::budget::{self, Section};
 use brain_kernel::plugin::ToolPlugin;
 use brain_kernel::protocol::{CallToolResult, Tool};
+use brain_kernel::store::ResponseStore;
 use serde::Deserialize;
 use std::future::Future;
 use std::path::PathBuf;
@@ -13,6 +15,8 @@ use crate::traversal::GraphTraversal;
 pub struct GraphHandler {
     root_dir: PathBuf,
     graph: Arc<tokio::sync::RwLock<ProjectCodeGraph>>,
+    store: Option<Arc<ResponseStore>>,
+    default_budget_tokens: usize,
 }
 
 impl GraphHandler {
@@ -23,7 +27,19 @@ impl GraphHandler {
         Self {
             root_dir: root_dir.into(),
             graph,
+            store: None,
+            default_budget_tokens: 2000,
         }
+    }
+
+    /// Opts into the response contract: truncation with a recoverable handle.
+    ///
+    /// Without it the handler renders everything, preserving the behaviour
+    /// existing callers and integration tests rely on.
+    pub fn with_budget(mut self, store: Arc<ResponseStore>, default_budget_tokens: usize) -> Self {
+        self.store = Some(store);
+        self.default_budget_tokens = default_budget_tokens;
+        self
     }
 
     pub async fn handle_context_graph(&self, arguments: serde_json::Value) -> CallToolResult {
@@ -31,6 +47,7 @@ impl GraphHandler {
         struct Params {
             target_symbol_or_file: String,
             depth: Option<usize>,
+            budget_tokens: Option<usize>,
         }
 
         let params: Params = match serde_json::from_value(arguments) {
@@ -40,19 +57,26 @@ impl GraphHandler {
 
         let depth = params.depth.unwrap_or(1);
         let lock = self.graph.read().await;
-        let markdown = GraphTraversal::context_graph(
+        let sections = GraphTraversal::context_sections(
             &lock,
             &params.target_symbol_or_file,
             depth,
             &self.root_dir,
         );
-        CallToolResult::text(markdown)
+        if sections.is_empty() {
+            return CallToolResult::text(format!(
+                "Nenhum símbolo ou arquivo correspondente encontrado para: `{}`.",
+                params.target_symbol_or_file
+            ));
+        }
+        CallToolResult::text(self.render(sections, params.budget_tokens))
     }
 
     pub async fn handle_impact_check(&self, arguments: serde_json::Value) -> CallToolResult {
         #[derive(Deserialize)]
         struct Params {
             symbol_name: String,
+            budget_tokens: Option<usize>,
         }
 
         let params: Params = match serde_json::from_value(arguments) {
@@ -61,8 +85,37 @@ impl GraphHandler {
         };
 
         let lock = self.graph.read().await;
-        let markdown = GraphTraversal::impact_check(&lock, &params.symbol_name, &self.root_dir);
-        CallToolResult::text(markdown)
+        let sections = GraphTraversal::impact_sections(&lock, &params.symbol_name, &self.root_dir);
+        if sections.is_empty() {
+            return CallToolResult::text(format!(
+                "Símbolo `{}` não encontrado no índice do projeto.",
+                params.symbol_name
+            ));
+        }
+        CallToolResult::text(self.render(sections, params.budget_tokens))
+    }
+
+    /// Fits sections into the budget, storing the omitted body when the handler
+    /// has opted into the contract.
+    fn render(&self, sections: Vec<Section>, budget_tokens: Option<usize>) -> String {
+        let store = match &self.store {
+            Some(store) => store,
+            None => {
+                return sections
+                    .iter()
+                    .map(|s| format!("{}\n{}\n", s.heading, s.body))
+                    .collect();
+            }
+        };
+
+        let budget = budget_tokens.unwrap_or(self.default_budget_tokens);
+        let selection = budget::select(&sections, budget);
+        let handle = if selection.omitted.is_empty() {
+            None
+        } else {
+            Some(store.insert(selection.omitted_body()))
+        };
+        budget::render(&selection, handle.as_deref())
     }
 }
 
