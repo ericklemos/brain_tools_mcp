@@ -1,11 +1,15 @@
 use brain_engine::ValidationClient;
 use brain_kernel::ast::AstChunker;
-use brain_kernel::protocol::CallToolResult;
+use brain_kernel::plugin::ToolPlugin;
+use brain_kernel::protocol::{CallToolResult, Tool};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 
 use crate::scanner::LexicalScanner;
+use crate::schema::brain_search_tool;
 
 #[derive(Debug, Deserialize)]
 pub struct BrainSearchParams {
@@ -40,6 +44,12 @@ impl SearchHandler {
             default_max_results,
             default_min_confidence,
         }
+    }
+
+    /// Handler for unit tests: no GGUF, so `ValidationClient` falls back to
+    /// lexical ranking and the test needs no GPU.
+    pub fn for_test() -> Self {
+        Self::new(".", ValidationClient::new(None, 0), 5, 0.65)
     }
 
     pub async fn handle_brain_search(&self, arguments: serde_json::Value) -> CallToolResult {
@@ -152,5 +162,35 @@ impl SearchHandler {
         }
 
         CallToolResult::text(out)
+    }
+}
+
+impl ToolPlugin for SearchHandler {
+    fn name(&self) -> &'static str {
+        "brain_search"
+    }
+
+    fn schema(&self) -> Tool {
+        brain_search_tool()
+    }
+
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = CallToolResult> + Send + '_>> {
+        Box::pin(self.handle_brain_search(args))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brain_kernel::plugin::ToolPlugin;
+
+    #[test]
+    fn search_plugin_announces_its_name_and_schema() {
+        let p = SearchHandler::for_test();
+        assert_eq!(p.name(), "brain_search");
+        assert_eq!(p.schema().name, "brain_search");
     }
 }

@@ -1,9 +1,13 @@
-use brain_kernel::protocol::CallToolResult;
+use brain_kernel::plugin::ToolPlugin;
+use brain_kernel::protocol::{CallToolResult, Tool};
 use serde::Deserialize;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::model::ProjectCodeGraph;
+use crate::schema::{brain_context_graph_tool, brain_impact_check_tool};
 use crate::traversal::GraphTraversal;
 
 pub struct GraphHandler {
@@ -59,5 +63,91 @@ impl GraphHandler {
         let lock = self.graph.read().await;
         let markdown = GraphTraversal::impact_check(&lock, &params.symbol_name, &self.root_dir);
         CallToolResult::text(markdown)
+    }
+}
+
+/// Exposes `handle_context_graph` as the `brain_context_graph` plugin.
+///
+/// A wrapper rather than an impl on `GraphHandler` itself: one handler backs
+/// two distinct tools, and `ToolPlugin::name` is stateless.
+pub struct GraphContextTool {
+    handler: Arc<GraphHandler>,
+}
+
+impl GraphContextTool {
+    pub fn new(handler: Arc<GraphHandler>) -> Self {
+        Self { handler }
+    }
+}
+
+impl ToolPlugin for GraphContextTool {
+    fn name(&self) -> &'static str {
+        "brain_context_graph"
+    }
+
+    fn schema(&self) -> Tool {
+        brain_context_graph_tool()
+    }
+
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = CallToolResult> + Send + '_>> {
+        Box::pin(self.handler.handle_context_graph(args))
+    }
+}
+
+/// Exposes `handle_impact_check` as the `brain_impact_check` plugin.
+pub struct GraphImpactTool {
+    handler: Arc<GraphHandler>,
+}
+
+impl GraphImpactTool {
+    pub fn new(handler: Arc<GraphHandler>) -> Self {
+        Self { handler }
+    }
+}
+
+impl ToolPlugin for GraphImpactTool {
+    fn name(&self) -> &'static str {
+        "brain_impact_check"
+    }
+
+    fn schema(&self) -> Tool {
+        brain_impact_check_tool()
+    }
+
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = CallToolResult> + Send + '_>> {
+        Box::pin(self.handler.handle_impact_check(args))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brain_kernel::plugin::ToolPlugin;
+
+    fn handler() -> GraphHandler {
+        GraphHandler::new(
+            ".",
+            Arc::new(tokio::sync::RwLock::new(ProjectCodeGraph::new())),
+        )
+    }
+
+    #[test]
+    fn context_graph_plugin_announces_its_name_and_schema() {
+        let p = GraphContextTool::new(Arc::new(handler()));
+        assert_eq!(p.name(), "brain_context_graph");
+        assert_eq!(p.schema().name, "brain_context_graph");
+    }
+
+    #[test]
+    fn impact_check_plugin_announces_its_name_and_schema() {
+        let p = GraphImpactTool::new(Arc::new(handler()));
+        assert_eq!(p.name(), "brain_impact_check");
+        assert_eq!(p.schema().name, "brain_impact_check");
     }
 }
