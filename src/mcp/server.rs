@@ -31,17 +31,28 @@ impl ToolDispatcher for EmptyDispatcher {
 
 pub struct BrainToolDispatcher {
     search_handler: Arc<crate::mcp::handlers::SearchHandler>,
+    graph_handler: Arc<crate::mcp::handlers::GraphHandler>,
 }
 
 impl BrainToolDispatcher {
-    pub fn new(search_handler: Arc<crate::mcp::handlers::SearchHandler>) -> Self {
-        Self { search_handler }
+    pub fn new(
+        search_handler: Arc<crate::mcp::handlers::SearchHandler>,
+        graph_handler: Arc<crate::mcp::handlers::GraphHandler>,
+    ) -> Self {
+        Self {
+            search_handler,
+            graph_handler,
+        }
     }
 }
 
 impl ToolDispatcher for BrainToolDispatcher {
     fn list_tools(&self) -> Vec<Tool> {
-        vec![crate::mcp::schemas::brain_search_tool()]
+        vec![
+            crate::mcp::schemas::brain_search_tool(),
+            crate::mcp::schemas::brain_context_graph_tool(),
+            crate::mcp::schemas::brain_impact_check_tool(),
+        ]
     }
 
     fn call_tool(
@@ -51,9 +62,12 @@ impl ToolDispatcher for BrainToolDispatcher {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CallToolResult> + Send + '_>> {
         let name = name.to_string();
         let search_handler = self.search_handler.clone();
+        let graph_handler = self.graph_handler.clone();
         Box::pin(async move {
             match name.as_str() {
                 "brain_search" => search_handler.handle_brain_search(arguments).await,
+                "brain_context_graph" => graph_handler.handle_context_graph(arguments).await,
+                "brain_impact_check" => graph_handler.handle_impact_check(arguments).await,
                 _ => CallToolResult::error(format!("Unknown tool: {name}")),
             }
         })

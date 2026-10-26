@@ -1,9 +1,12 @@
 use brain_tools::engine::ValidationClient;
-use brain_tools::mcp::handlers::SearchHandler;
+use brain_tools::graph::builder::GraphBuilder;
+use brain_tools::graph::watcher::GraphWatcher;
+use brain_tools::mcp::handlers::{GraphHandler, SearchHandler};
 use brain_tools::mcp::server::{BrainToolDispatcher, McpServer};
 use brain_tools::Config;
 use clap::Parser;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
@@ -37,7 +40,18 @@ async fn main() -> anyhow::Result<()> {
         config.default_min_confidence,
     ));
 
-    let dispatcher = Arc::new(BrainToolDispatcher::new(search_handler));
+    // Initialize in-memory CodeGraph and Watcher
+    let graph_builder = Arc::new(GraphBuilder::new()?);
+    let code_graph = Arc::new(RwLock::new(graph_builder.build_graph(&config.root_dir)?));
+
+    let _watcher = GraphWatcher::start(
+        config.root_dir.clone(),
+        code_graph.clone(),
+        graph_builder.clone(),
+    )?;
+
+    let graph_handler = Arc::new(GraphHandler::new(&config.root_dir, code_graph));
+    let dispatcher = Arc::new(BrainToolDispatcher::new(search_handler, graph_handler));
     let server = McpServer::new(dispatcher);
 
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
