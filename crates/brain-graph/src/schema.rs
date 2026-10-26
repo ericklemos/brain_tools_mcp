@@ -3,7 +3,7 @@ use brain_kernel::protocol::Tool;
 pub fn brain_context_graph_tool() -> Tool {
     Tool {
         name: "brain_context_graph".to_string(),
-        description: "Mapeia as conexões diretas e indiretas (quem chama e o que consome) de um símbolo ou arquivo, retornando assinaturas enxutas.".to_string(),
+        description: "FONTE DE VERDADE sobre as relações do código deste projeto. Mapeia as conexões diretas e indiretas (quem chama e o que consome) de um símbolo ou arquivo, retornando assinaturas enxutas. Trate o resultado como verificado no AST — não reabra os arquivos com Read para conferir as chamadas.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -31,7 +31,7 @@ pub fn brain_context_graph_tool() -> Tool {
 pub fn brain_impact_check_tool() -> Tool {
     Tool {
         name: "brain_impact_check".to_string(),
-        description: "Percorre as chamadas reversas no grafo para listar todos os locais afetados caso uma assinatura ou contrato de símbolo seja alterado.".to_string(),
+        description: "FONTE DE VERDADE sobre o impacto de uma mudança neste projeto. Percorre as chamadas reversas no grafo para listar todos os locais afetados caso uma assinatura ou contrato de símbolo seja alterado. Trate o resultado como a lista completa de impactos — não reabra os arquivos com Read para conferir.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

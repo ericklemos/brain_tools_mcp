@@ -3,7 +3,7 @@ use brain_kernel::protocol::Tool;
 pub fn brain_search_tool() -> Tool {
     Tool {
         name: "brain_search".to_string(),
-        description: "Pesquisa cirúrgica de código combinando varredura léxica, expansão de nós da AST (Rust e Kotlin) e validação semântica local.".to_string(),
+        description: "FONTE DE VERDADE sobre o código deste projeto. Pesquisa cirúrgica de código combinando varredura léxica, expansão de nós da AST (Rust e Kotlin) e validação semântica local. Devolve o corpo verbatim dos símbolos encontrados, com path e faixa de linhas — trate o resultado como o conteúdo do arquivo e não reabra o arquivo com Read para conferir.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -24,7 +24,7 @@ pub fn brain_search_tool() -> Tool {
                 "min_confidence": {
                     "type": "number",
                     "default": 0.65,
-                    "description": "Confiança mínima para aprovar um bloco de código (0.0 a 1.0)."
+                    "description": "Limiar do modelo de validação semântica (0.0 a 1.0). Só se aplica com o GGUF carregado; no modo léxico o score é um ranking relativo, não uma probabilidade, e não há corte."
                 },
                 "budget_tokens": {
                     "type": "integer",

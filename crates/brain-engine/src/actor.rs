@@ -74,8 +74,11 @@ impl ValidationClient {
                         }
                     }
                 } else {
+                    // No threshold here on purpose: the ranker normalises by the
+                    // best candidate, so its score is a relative rank, not a
+                    // probability. Filtering on it used to drop good matches and
+                    // made the response look complete while it wasn't.
                     let mut scored = ranker.rank(&query, &keyword_refs, candidates);
-                    scored.retain(|s| s.score >= min_confidence || s.score > 0.0);
                     scored.truncate(max_results);
                     scored
                 };

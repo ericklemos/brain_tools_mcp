@@ -123,14 +123,19 @@ impl SearchHandler {
             return CallToolResult::text("Termos encontrados, porém nenhum bloco de código AST (Rust/Kotlin) pôde ser delimitado.");
         }
 
-        let scored = match self
+        // Ask the validator for every approved block and cut here instead. The
+        // validator used to truncate to `max_results` itself, which made a
+        // capped response indistinguishable from a complete one — the agent had
+        // no way to tell, so it went to the file to find out.
+        let candidate_count = candidates.len();
+        let approved = match self
             .validator
             .validate(
                 params.natural_query.clone(),
                 params.keywords.clone(),
                 candidates,
                 min_confidence,
-                max_results,
+                candidate_count.max(1),
             )
             .await
         {
@@ -138,14 +143,41 @@ impl SearchHandler {
             Err(e) => return CallToolResult::error(format!("Validation failed: {e}")),
         };
 
-        if scored.is_empty() {
+        if approved.is_empty() {
             return CallToolResult::text(format!(
                 "Nenhum bloco de código atingiu a confiança mínima exigida ({:.2}).",
                 min_confidence
             ));
         }
 
-        let mut sections = Vec::with_capacity(scored.len());
+        let approved_total = approved.len();
+        let scored: Vec<_> = approved.into_iter().take(max_results.max(1)).collect();
+
+        // What the response can honestly promise the agent: every section is the
+        // verbatim body of its symbol, and whether anything was left out — and
+        // why. Both are stated up front so re-opening the file is a choice, not
+        // a doubt.
+        let completeness = if approved_total > scored.len() {
+            format!(
+                "#### {} de {} blocos aprovados — o teto max_results={} cortou o resto; aumente max_results para ver mais.",
+                scored.len(),
+                approved_total,
+                max_results
+            )
+        } else if scored.len() < candidate_count {
+            format!(
+                "#### {} de {} candidatas casaram com a query — as demais não são o código pedido.",
+                scored.len(),
+                candidate_count
+            )
+        } else {
+            format!(
+                "#### Todas as {} candidatas casaram com a query.",
+                scored.len()
+            )
+        };
+
+        let mut sections = Vec::with_capacity(scored.len() + 1);
 
         for (idx, item) in scored.iter().enumerate() {
             let relative_path = item
@@ -162,13 +194,12 @@ impl SearchHandler {
             };
 
             let heading = format!(
-                "#### {}. `{}` (`{}:{}-{}`) — Confiança: {:.0}%",
+                "#### {}. `{}` (`{}:{}-{}`)",
                 idx + 1,
                 item.snippet.symbol_name,
                 relative_path,
                 item.snippet.start_line,
                 item.snippet.end_line,
-                item.score * 100.0
             );
 
             let mut body = String::new();
@@ -187,7 +218,10 @@ impl SearchHandler {
 
         if self.store.is_none() {
             // No store configured: render everything, as before this contract.
-            let mut out = format!("### Resultados da Busca (`{}`)\n\n", params.natural_query);
+            let mut out = format!(
+                "### Resultados da Busca (`{}`)\n{}\n\n> Trecho verbatim do arquivo, corpo completo do símbolo.\n\n",
+                params.natural_query, completeness
+            );
             for section in &sections {
                 out.push_str(&section.heading);
                 out.push('\n');
@@ -209,7 +243,10 @@ impl SearchHandler {
             )
         };
 
-        let mut out = format!("### Resultados da Busca (`{}`)\n\n", params.natural_query);
+        let mut out = format!(
+            "### Resultados da Busca (`{}`)\n{}\n\n> Trecho verbatim do arquivo, corpo completo do símbolo.\n\n",
+            params.natural_query, completeness
+        );
         out.push_str(&budget::render(&selection, handle.as_deref()));
         CallToolResult::text(out)
     }
@@ -288,6 +325,70 @@ async fn search_honours_budget_and_leaves_the_rest_in_the_store() {
         .and_then(|s| s.split('`').next())
         .expect("handle in envelope");
     assert!(store.get(handle).is_some(), "handle must resolve in the store");
+}
+
+#[tokio::test]
+async fn response_declares_completeness_and_carries_no_fake_confidence() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let src = root.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("auth.rs"),
+        "pub fn verify_jwt_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
+    )
+    .unwrap();
+
+    let validator = ValidationClient::new(None, 0);
+    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+    let handler =
+        SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
+
+    let out = handler
+        .handle_brain_search(serde_json::json!({
+            "natural_query": "jwt token",
+            "keywords": ["verify_jwt_token"]
+        }))
+        .await;
+
+    let text = &out.content[0].text;
+    // The completeness claim is what licenses the agent to stop verifying.
+    assert!(text.contains("candidatas casaram com a query"), "{text}");
+    assert!(text.contains("Trecho verbatim"), "{text}");
+    // The number is a relative rank, not a probability: it must not read as one.
+    assert!(!text.contains("Confiança:"), "relative rank leaked as confidence: {text}");
+}
+
+#[tokio::test]
+async fn a_max_results_cut_is_declared_instead_of_looking_complete() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let src = root.join("src");
+    fs::create_dir_all(&src).unwrap();
+    for name in ["handler_a", "handler_b", "handler_c", "handler_d"] {
+        fs::write(
+            src.join(format!("{name}.rs")),
+            format!("pub fn {name}() -> u8 {{ 1 }}\n"),
+        )
+        .unwrap();
+    }
+
+    let validator = ValidationClient::new(None, 0);
+    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+    let handler = SearchHandler::new(root, validator, 2, 0.0).with_budget(store, 100_000);
+
+    let out = handler
+        .handle_brain_search(serde_json::json!({
+            "natural_query": "handler",
+            "keywords": ["handler"]
+        }))
+        .await;
+
+    let text = &out.content[0].text;
+    assert!(
+        text.contains("teto max_results=2 cortou o resto"),
+        "a capped response must say so: {text}"
+    );
 }
 
 #[tokio::test]
