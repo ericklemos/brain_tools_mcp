@@ -72,7 +72,7 @@ no meio da chamada MCP. O cliente só vê `Connection closed`, sem causa aparent
 
 Por isso o validador dimensiona `n_batch` e `n_ubatch` dinamicamente para o maior par
 prefixo+candidato (teto de `n_ctx`, piso de 512). Ao trocar de modelo ou de tamanho de
-snippet, os testes em `src/engine/llama_validator.rs` cobrem essa invariante:
+snippet, os testes em `crates/brain-engine/src/llama_validator.rs` cobrem essa invariante:
 
 ```bash
 cargo test --lib batch_capacity
@@ -176,3 +176,32 @@ Para rodar todos os testes de unidade, integração e smoke tests:
 ```bash
 cargo test
 ```
+
+---
+
+## 🧩 Estrutura do Workspace
+
+O projeto é um workspace Cargo em microkernel: um núcleo estável e cada ferramenta MCP
+como um plugin registrado nele.
+
+```
+crates/
+  brain-kernel/   protocol (JSON-RPC), tipos AST, AstChunker, Config, Registry/ToolPlugin
+  brain-search/   scanner léxico + brain_search
+  brain-graph/    grafo de código, watcher, brain_context_graph, brain_impact_check
+  brain-engine/   inferência GGUF (llama-cpp-2 isolado aqui)
+  brain-tools/    binário, monta o Registry em main.rs e re-exporta os caminhos antigos
+```
+
+Adicionar uma ferramenta é criar o tipo no crate dela e uma linha de `register` em
+`main.rs` — não há mais um `match` de nomes nem uma lista de schemas a editar.
+
+As features `cuda`, `vulkan` e `metal` propagam `brain-tools → brain-engine → llama-cpp-2`:
+
+```bash
+cargo build --release --features cuda   # build GPU
+```
+
+`brain-tools` mantém um módulo de compatibilidade (`crates/brain-tools/src/lib.rs`) que
+re-exporta `brain_tools::search`, `::graph`, `::engine` e `::mcp`, então código que usa a
+API antiga continua compilando.
