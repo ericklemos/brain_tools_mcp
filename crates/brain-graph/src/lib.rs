@@ -9,3 +9,8 @@ pub mod watcher;
 pub use graph_tool::GraphHandler;
 pub use model::ProjectCodeGraph;
 pub use schema::{brain_context_graph_tool, brain_impact_check_tool};
+pub mod read_tool;
+pub mod map_tool;
+pub mod assert_tool;
+pub mod diff_tool;
+pub mod history_tool;

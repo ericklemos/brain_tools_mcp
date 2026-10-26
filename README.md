@@ -28,7 +28,35 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
    - Cache por hash do conteúdo indexado + estado dos manifests: repetir sem mudar nada devolve uma linha.
    - Um build com 40 erros sai em ~1.300 caracteres, com o restante recuperável por `brain_peek`.
 
-4. **Sincronização Incremental em Segundo Plano:**
+5. **`brain_peek` (Recuperação de Resposta Truncada):**
+   - Toda ferramenta respeita `budget_tokens`: o excedente sai do contexto e fica recuperável por um handle `h_xxxxxxxx` (TTL de 30 min), paginável por `offset_chars`.
+   - O envelope de truncamento anuncia quantas seções ficaram de fora — a resposta nunca "parece completa" sem ser.
+
+6. **`brain_read` (Leitura Cirúrgica):**
+   - Sem `symbol`: devolve o esqueleto do arquivo (uma seção por símbolo, só assinatura). Com `symbol`: devolve só o corpo daquele símbolo, com a linguagem certa no fence.
+   - Resolve o caminho contra `--root-dir` e recusa traversal (`../../etc/passwd`) em vez de ler a máquina.
+
+7. **`brain_map` (Mapa do Repositório):**
+   - Um arquivo por seção, com os símbolos e assinaturas, ordenado por fan-in (quantas chamadas o arquivo recebe).
+   - É a resposta para "onde eu estou?" sem abrir nenhum arquivo; `path` restringe a um subtree.
+
+8. **`brain_assert` (Perguntas Sim/Não):**
+   - `exists`, `public` e `used_outside` respondem `SIM`/`NÃO` com a evidência em uma linha — o símbolo existe, é API pública (não `pub(crate)`), ou tem chamadas de outro arquivo/módulo.
+   - Encerra o ciclo "achei que era usado, deixa eu grepar para confirmar".
+
+9. **`brain_diff` (Diff com Impacto):**
+   - Parseia `git diff --unified=0`, mapeia as linhas alteradas para símbolos do grafo e devolve: símbolos alterados, chamadores **fora** dos arquivos alterados e testes que dependem deles.
+   - `include: ["impact", "tests"]` permite pedir só uma das seções quando o custo do teste não importa.
+
+10. **`brain_why` (Histórico de Símbolo):**
+    - Roda `git log -L` nas linhas exatas do símbolo e devolve commits (hash, autor, data, assunto) — sem despejar o patch.
+    - Responde "por que este código é assim?" no lugar de abrir o histórico do arquivo inteiro.
+
+11. **`brain_ledger` (Memória Durável):**
+    - Fatos e decisões do projeto em `.brain/ledger.jsonl` (append-only), deduplicados por hash do texto normalizado.
+    - `record`, `list` e `search` — a decisão não precisa ser redescoberta na próxima sessão.
+
+12. **Sincronização Incremental em Segundo Plano:**
    - Watcher assíncrono via `notify` e `blake3`.
    - Ao salvar um arquivo no editor, o grafo atualiza apenas os nós modificados em milissegundos sem reindexar o projeto todo.
 
@@ -106,15 +134,21 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 | Flag | Padrão | Descrição |
 |---|---|---|
 | `--root-dir`, `-r` | `.` (cwd) | Diretório indexado e vigiado pelo watcher. **Relativo ao cwd do processo.** |
-| `--model-path` | — | Caminho do GGUF. Sem ele, opera em modo léxico/AST (fallback). |
+| `--model-path`, `-m` | — | Caminho do GGUF. Sem ele, opera em modo léxico/AST (fallback). |
 | `--gpu-layers` | `33` | Camadas offloaded para a GPU. |
-| `--min-confidence` | `0.65` | Confiança mínima para aprovar um bloco (0.0–1.0). |
-| `--max-results` | `5` | Máximo de recortes retornados. |
+| `--default-min-confidence` | `0.65` | Limiar do modelo semântico. **Só se aplica com o GGUF carregado** — no modo léxico o score é ranking relativo e não há corte. |
+| `--default-max-results` | `5` | Máximo de recortes retornados. |
+| `--default-budget-tokens` | `2000` | Teto aproximado de tokens por resposta; o excedente vai para `brain_peek`. |
+| `--handle-ttl-secs` | `1800` | Tempo que uma resposta truncada continua recuperável. |
+| `--handle-max-bytes` | `67108864` | Teto de memória do store de handles (64 MB). |
 | `--exec-timeout-secs` | `300` | Mata o `brain_exec` após N segundos e devolve o parcial. |
 | `--exec-disabled` | `false` | Não registra `brain_exec`, para hosts onde spawn de processo não é aceitável. |
+| `--log-level` | `info` | Filtro de log (sempre em `stderr`, nunca no stdout do protocolo). |
+| `--threads`, `-t` | — | Threads de CPU para busca e inferência. |
 
 Todas aceitam variável de ambiente equivalente (`BRAIN_ROOT_DIR`, `BRAIN_GPU_LAYERS`,
-`BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `RUST_LOG`).
+`BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `BRAIN_BUDGET_TOKENS`, `RUST_LOG`).
+Rode `brain-tools --help` para a lista exata do binário instalado.
 
 ### Claude Code (`~/.claude.json`)
 
@@ -160,22 +194,178 @@ por quê).
 }
 ```
 
-### Preferir `brain_search` a `grep`
+### Ensinar o agente a confiar no brain-tools
 
-O MCP por si só não garante que o agente use a ferramenta — ele decide. Para orientar
-essa escolha, adicione ao `CLAUDE.md` (global em `~/.claude/CLAUDE.md`, ou por projeto):
+O MCP por si só não impede o agente de reabrir com `Read` o arquivo que a busca já
+devolveu. São duas camadas, com poderes diferentes: **instrução** orienta, **hook**
+sobrepõe (o harness recusa a chamada). O bloco pronto para colar em
+`~/.claude/CLAUDE.md` e o hook estão em 👉 [**docs/hooks.md**](docs/hooks.md).
+
+Em resumo, a instrução precisa dizer três coisas:
 
 ```markdown
-## Busca de código
+## brain-tools é a fonte de verdade
 
-Prefira `brain_search` antes de `Grep` para buscas conceituais ("onde fica X").
-Use `Grep`/`Glob` apenas para regex exata, strings literais ou quando já souber
-o arquivo. Para avaliar impacto de mudanças, prefira `brain_context_graph` e
-`brain_impact_check` a varrer o repo caçando chamadas.
+O resultado de `brain_search` / `brain_context_graph` / `brain_impact_check` **é** a
+leitura do código: trecho verbatim, com `path:start-end`. Trate-o como já lido e não
+chame `Read` no mesmo arquivo para conferir. Score baixo não é motivo de desconfiança:
+ele ordena candidatas entre si, não mede veracidade. `Read` só é legítimo para imports
+e contexto fora da faixa devolvida, para o arquivo que será editado (`Edit` exige
+leitura prévia) ou quando a resposta declarar corte. Se a busca não respondeu, refine
+a busca — não abra o arquivo.
 ```
 
 Se uma chamada MCP falhar, o agente deve dizer isso explicitamente em vez de
 silenciosamente seguir com grep — a degradação da busca merece ser sinalizada.
+
+---
+
+## 🖥️ Configurar em outro PC
+
+Passo a passo do zero. Troque `/caminho/do/brain_tools` pelo caminho real da máquina.
+
+### 1. Dependências e build
+
+```bash
+git clone <repo> brain_tools && cd brain_tools
+
+# Ubuntu/Debian — tree-sitter e llama.cpp precisam de toolchain C:
+sudo apt install build-essential cmake clang libclang-dev   # libclang-dev: bindgen
+
+cargo build --release                 # CPU
+cargo build --release --features cuda # GPU NVIDIA
+```
+
+O binário fica em `target/release/brain-tools`. **Refaça o build sempre que puxar
+código novo** — nenhum cliente avisa que está rodando um binário velho (sintoma típico:
+faltam ferramentas no `tools/list`).
+
+### 2. Modelo GGUF (opcional)
+
+```bash
+./scripts/download_model.sh    # ~806 MB em models/
+```
+
+Sem o modelo o servidor roda em modo léxico/AST — funciona, mas `--default-min-confidence`
+deixa de ter efeito.
+
+### 3. Registrar o MCP
+
+```bash
+claude mcp add brain-tools \
+  /caminho/do/brain_tools/target/release/brain-tools \
+  --model-path /caminho/do/brain_tools/models/vllm-d3-edge-Q8_0.gguf \
+  --gpu-layers 33
+```
+
+**Não passe `--root-dir`**: o Claude Code inicia o servidor com cwd igual ao diretório do
+projeto, e o padrão `.` passa a indexar o repositório em que você está aberto — um único
+registro serve para todos os projetos.
+
+Confirme as ferramentas expostas:
+
+```bash
+claude mcp list
+```
+
+Devem aparecer `brain_search`, `brain_context_graph`, `brain_impact_check`, `brain_peek`,
+`brain_exec`, `brain_read`, `brain_map`, `brain_assert`, `brain_diff`, `brain_why` e
+`brain_ledger` (`brain_exec` só não aparece com `--exec-disabled`). Se faltar alguma, o
+binário é antigo.
+
+### 4. Instrução — `~/.claude/CLAUDE.md`
+
+Cole o bloco "brain-tools é a fonte de verdade" de [docs/hooks.md](docs/hooks.md).
+É ele que autoriza o agente a parar de verificar o que já recebeu.
+
+### 5. Hook anti-releitura — `~/.claude/settings.json`
+
+O hook é a única camada que **sobrepõe** o comportamento: o harness recusa a releitura
+em vez de apenas desaconselhá-la.
+
+```bash
+mkdir -p ~/.claude/hooks
+cp /caminho/do/brain_tools/scripts/brain-read-once.py ~/.claude/hooks/
+chmod +x ~/.claude/hooks/brain-read-once.py
+```
+
+Adicione ao `~/.claude/settings.json` (use o caminho **absoluto** do script; caminho
+relativo não resolve):
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__brain-tools__brain_search",
+      "mcp__brain-tools__brain_context_graph",
+      "mcp__brain-tools__brain_impact_check",
+      "mcp__brain-tools__brain_peek",
+      "mcp__brain-tools__brain_exec",
+      "mcp__brain-tools__brain_read",
+      "mcp__brain-tools__brain_map",
+      "mcp__brain-tools__brain_assert",
+      "mcp__brain-tools__brain_diff",
+      "mcp__brain-tools__brain_why",
+      "mcp__brain-tools__brain_ledger"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I /home/SEU_USUARIO/.claude/hooks/brain-read-once.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I /home/SEU_USUARIO/.claude/hooks/brain-read-once.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+O hook **não** bloqueia a primeira leitura de um arquivo — é ela que habilita o `Edit`.
+Ele bloqueia só a repetição de uma faixa já lida, com o arquivo inalterado desde então.
+Detalhes e tabela de casos em [docs/hooks.md](docs/hooks.md).
+
+### 6. Reiniciar e verificar
+
+`CLAUDE.md` e hooks são lidos na inicialização: **reinicie o Claude Code**.
+
+```bash
+claude mcp list                      # brain-tools deve estar connected
+```
+
+Numa sessão nova, peça uma busca conceitual e confira a resposta:
+
+- começa com `N de M candidatas casaram com a query` e a linha `Trecho verbatim`;
+- **não** traz mais `Confiança: NN%` (o número era ranking relativo, não probabilidade);
+- se o agente tentar reler o mesmo arquivo, o hook responde com a mensagem de bloqueio.
+
+### Diagnóstico rápido
+
+| Sintoma | Causa provável |
+|---|---|
+| `Connection closed` logo após conectar | `--root-dir` inexistente, ou binário quebrado/incompatível |
+| Menos ferramentas que o esperado | binário antigo — refaça `cargo build --release` |
+| Busca sempre vazia | servidor indexando outro diretório (cwd errado) |
+| Hook não dispara | caminho relativo no `settings.json`, script sem permissão, ou sessão não reiniciada |
+| `brain_exec` não aparece | `--exec-disabled` ativo |
+| Agente ainda relê | instrução ausente no `CLAUDE.md` e/ou hook não registrado |
 
 ---
 

@@ -1,8 +1,14 @@
+use brain_graph::assert_tool::AssertTool;
 use brain_graph::builder::GraphBuilder;
+use brain_graph::diff_tool::DiffTool;
 use brain_graph::graph_tool::{GraphContextTool, GraphImpactTool, GraphHandler};
+use brain_graph::history_tool::HistoryTool;
+use brain_graph::map_tool::MapTool;
+use brain_graph::read_tool::ReadTool;
 use brain_graph::watcher::GraphWatcher;
 use brain_engine::ValidationClient;
 use brain_exec::ExecTool;
+use brain_kernel::ledger_tool::LedgerTool;
 use brain_kernel::peek_tool::PeekTool;
 use brain_kernel::store::ResponseStore;
 use brain_kernel::{Config, Registry};
@@ -92,15 +98,63 @@ async fn main() -> anyhow::Result<()> {
     } else {
         let exec_tool = ExecTool::new(
             &config.root_dir,
-            store,
+            store.clone(),
             config.default_budget_tokens,
             Duration::from_secs(config.exec_timeout_secs),
         )
-        .with_sources(sources_from(code_graph));
+        .with_sources(sources_from(code_graph.clone()));
         registry
             .register(Arc::new(exec_tool))
             .map_err(|e| anyhow::anyhow!(e))?;
     }
+
+    // Orientation and history tools: they read the same watch-maintained graph.
+    registry
+        .register(Arc::new(ReadTool::new(
+            &config.root_dir,
+            store.clone(),
+            config.default_budget_tokens,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(MapTool::new(
+            &config.root_dir,
+            code_graph.clone(),
+            store.clone(),
+            config.default_budget_tokens,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(AssertTool::new(
+            &config.root_dir,
+            code_graph.clone(),
+            store.clone(),
+            config.default_budget_tokens,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(DiffTool::new(
+            &config.root_dir,
+            code_graph.clone(),
+            store.clone(),
+            config.default_budget_tokens,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(HistoryTool::new(
+            &config.root_dir,
+            code_graph,
+            store.clone(),
+            config.default_budget_tokens,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(LedgerTool::new(
+            &config.root_dir,
+            store,
+            config.default_budget_tokens,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     let server = McpServer::new(Arc::new(registry));
 

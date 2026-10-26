@@ -75,6 +75,12 @@ async fn test_daemon_smoke_stdio_purity() {
             "brain_impact_check",
             "brain_peek",
             "brain_exec",
+            "brain_read",
+            "brain_map",
+            "brain_assert",
+            "brain_diff",
+            "brain_why",
+            "brain_ledger",
         ]
     );
 
