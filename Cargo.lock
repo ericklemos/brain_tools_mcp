@@ -144,8 +144,8 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "tree-sitter 0.24.7",
- "tree-sitter-kotlin",
+ "tree-sitter",
+ "tree-sitter-kotlin-ng",
  "tree-sitter-rust",
 ]
 
@@ -1262,16 +1262,6 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.20.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e747b1f9b7b931ed39a548c1fae149101497de3c1fc8d9e18c62c1a66c683d3d"
-dependencies = [
- "cc",
- "regex",
-]
-
-[[package]]
-name = "tree-sitter"
 version = "0.24.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5387dffa7ffc7d2dae12b50c6f7aab8ff79d6210147c6613561fc3d474c6f75"
@@ -1284,13 +1274,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-sitter-kotlin"
-version = "0.3.5"
+name = "tree-sitter-kotlin-ng"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8df217a0e1fec649f3e13157de932439f3d37ea4e265038dd0873971ef56e726"
+checksum = "e800ebbda938acfbf224f4d2c34947a31994b1295ee6e819b65226c7b51b4450"
 dependencies = [
  "cc",
- "tree-sitter 0.20.10",
+ "tree-sitter-language",
 ]
 
 [[package]]

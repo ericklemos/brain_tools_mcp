@@ -43,7 +43,6 @@ grep-matcher = "0.1"
 # Tree-sitter & Language Grammars
 tree-sitter = "0.24"
 tree-sitter-rust = "0.23"
-tree-sitter-kotlin = "0.3"
 streaming-iterator = "0.1"
 
 # Graph Engine & Incremental Invalidation
@@ -53,6 +52,7 @@ notify = "6.1"
 
 # Local LLM Inference Engine (GGUF)
 llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common"] }
+tree-sitter-kotlin-ng = "1.1.0"
 
 [dev-dependencies]
 tempfile = "3.10"
