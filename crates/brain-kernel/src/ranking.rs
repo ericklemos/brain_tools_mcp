@@ -1,4 +1,4 @@
-use crate::search::ast_chunker::AstSnippet;
+use crate::ast::AstSnippet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoredSnippet {
