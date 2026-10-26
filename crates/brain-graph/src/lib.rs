@@ -3,6 +3,7 @@ pub mod graph_tool;
 pub mod model;
 pub mod queries;
 pub mod schema;
+pub mod scope;
 pub mod traversal;
 pub mod watcher;
 

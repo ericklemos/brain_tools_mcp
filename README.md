@@ -20,6 +20,10 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
 
 3. **`brain_impact_check` (Análise de Impacto Reverso):**
    - Percorre dependências reversas transitivas no grafo para apontar todos os pontos do repositório que quebram caso uma assinatura seja modificada.
+   - **Resolução por escopo, não por nome.** Uma chamada é ligada à definição pelo mesmo arquivo → `use` explícito → caminho da própria chamada (`crate::a::Thing::new`) → mesmo crate → nome global sem ambiguidade. Um nome ambíguo sem evidência local **não gera aresta**: aresta faltando é recuperável, aresta errada contamina todas as ferramentas.
+   - Métodos resolvem por tipo do receptor (`x.build()` → `GraphBuilder::build`), a partir de `self`, do tipo do `impl`, de parâmetros tipados e de `let x = Type::new(…)`.
+   - O chamador é sempre o nó **mais interno** que contém a linha.
+   - O relatório abre com a confiança do grafo (`> Confiança do grafo: 32% das 3712 chamadas resolvidas`): a ferramenta diz o quanto não sabe, em vez de parecer completa. "Nenhum chamador encontrado" nunca é apresentado como "não há chamadores".
 
 4. **`brain_exec` (Build e Testes Resumidos):**
    - Roda `build`, `check`, `test` ou `clippy` — um enum fechado, nunca uma string de comando.
@@ -38,6 +42,7 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
 
 7. **`brain_map` (Mapa do Repositório):**
    - Um arquivo por seção, com os símbolos e assinaturas, ordenado por fan-in (quantas chamadas o arquivo recebe).
+   - Carrega a mesma linha de confiança do grafo: a ordenação por centralidade só vale o que a resolução de chamadas vale.
    - É a resposta para "onde eu estou?" sem abrir nenhum arquivo; `path` restringe a um subtree.
 
 8. **`brain_assert` (Perguntas Sim/Não):**
@@ -150,6 +155,11 @@ Todas aceitam variável de ambiente equivalente (`BRAIN_ROOT_DIR`, `BRAIN_GPU_LA
 `BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `BRAIN_BUDGET_TOKENS`, `RUST_LOG`).
 Rode `brain-tools --help` para a lista exata do binário instalado.
 
+> ⚠️ **`--exec-timeout-secs` não é o timeout do MCP.** Ele limita só o processo filho do
+> `brain_exec` (300 s por padrão). O tempo que o **cliente** espera por uma resposta MCP
+> é outro controle, configurado do lado do cliente — veja
+> [Timeouts](#timeouts-quanto-esperar-do-d3-edge-e-como-não-ser-cortado).
+
 ### Claude Code (`~/.claude.json`)
 
 ```json
@@ -180,6 +190,74 @@ por quê).
 > configuração: o handshake JSON-RPC responde normalmente e o processo só morre depois,
 > ao iniciar o watcher — o cliente reporta `Connection closed`.
 > Confirme sempre com `test -d /seu/caminho`.
+
+### Timeouts: quanto esperar do `d3-edge` e como não ser cortado
+
+O `d3-edge` é um modelo de decisão de 0.7B, **não** um gerador de texto: cada validação
+semântica é um forward pass de logits, não uma geração de tokens. O custo real medido
+nesta máquina (Q8_0, `--gpu-layers 33`, projeto de 932 arquivos / 138 mil linhas) é:
+
+| Etapa | Tempo medido |
+|---|---|
+| `initialize` (handshake, servidor frio) | 1,66 s |
+| `initialize` (servidor já carregado) | 0,82 s |
+| `tools/list` | 0,00 s |
+| `brain_search` (primeira chamada) | 0,12 s |
+| `brain_search` (segunda chamada) | 0,60 s |
+
+O carregamento do GGUF acontece numa **thread de fundo** (`crates/brain-engine/src/actor.rs`),
+então ele nunca bloqueia o handshake — o `initialize` responde antes de o modelo estar
+pronto. Por isso timeout de inicialização **não** é o problema típico deste servidor. O
+que pode estourar é uma chamada individual quando o `n_ubatch` é redimensionado para um
+snippet grande (ver [Modelos não-causais](#modelos-não-causais-atenção-vllm-d3-edge)) ou
+quando várias instâncias disputam a mesma GPU.
+
+**Nunca configure 10 minutos como teto global de chamada.** Os defaults do cliente são
+maiores que isso, e um `600000` fixo *reduziria* a margem em vez de aumentá-la. Valores
+reais do Claude Code 2.1.x:
+
+| Controle | Default | Escopo |
+|---|---|---|
+| `MCP_TIMEOUT` (ms) | **30 000** | Inicialização/conexão do servidor. |
+| watchdog de silêncio em stdio | **30 min** | Por chamada: quanto tempo a ferramenta pode ficar sem emitir nada. |
+| campo `timeout` (ms) no servidor | herda o idle acima | Wall-clock **duro** por chamada; **substitui** o idle global. Valores < 1000 ms são ignorados. |
+
+Ou seja: o caminho certo é **não mexer** no idle (30 min já cobre com folga um forward
+pass de 1 s) e só subir `MCP_TIMEOUT` se o handshake falhar de fato. Para exigir um teto
+duro maior por chamada, use o campo `timeout` — em milissegundos — e mantenha-o **acima**
+de 30 min se a intenção for afrouxar, não apertar:
+
+```json
+{
+  "mcpServers": {
+    "brain-tools": {
+      "command": "/caminho/absoluto/brain-tools/target/release/brain-tools",
+      "args": [
+        "--model-path", "/caminho/absoluto/brain-tools/models/vllm-d3-edge-Q8_0.gguf",
+        "--gpu-layers", "33"
+      ],
+      "env": { "RUST_LOG": "info", "MCP_TIMEOUT": "300000" },
+      "timeout": 3600000
+    }
+  }
+}
+```
+
+`"timeout": 3600000` = 1 hora de teto duro por chamada. É seguro: um forward pass de 1 s
+nunca chega perto disso, e se a GPU travar o agente recebe um erro em vez de esperar
+para sempre. `MCP_TIMEOUT=300000` dá 5 min ao handshake — folga absurda para um
+`initialize` de 1,66 s, sem penalizar o usuário quando a máquina está carregada.
+
+Para aumentar **todos** os servidores de uma vez, use as variáveis de ambiente globais em
+vez de editar cada registro: `MCP_TIMEOUT` (startup) e `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`
+(idle por chamada; `0` desativa).
+
+> ⚠️ **Timeout não é o gargalo deste modelo.** Se a busca estiver demorando segundos em
+> vez de milissegundos, o sintoma real é contenção de GPU: cada sessão do Claude Code
+> inicia **sua própria** instância do servidor, e cada uma carrega ~500 MB de modelo na
+> VRAM. Confira com `nvidia-smi --query-compute-apps=pid,used_memory --format=csv` e
+> `pgrep -cf "brain-tools --model-path"`. Aumentar timeout apenas transforma "corta
+> cedo" em "espera muito" — não devolve a VRAM.
 
 ### Cursor (`.cursor/mcp.json`)
 
@@ -252,11 +330,17 @@ deixa de ter efeito.
 ### 3. Registrar o MCP
 
 ```bash
-claude mcp add brain-tools \
+MCP_TIMEOUT=300000 claude mcp add brain-tools \
   /caminho/do/brain_tools/target/release/brain-tools \
   --model-path /caminho/do/brain_tools/models/vllm-d3-edge-Q8_0.gguf \
   --gpu-layers 33
 ```
+
+`MCP_TIMEOUT=300000` (5 min) é folga deliberada no handshake. O default é 30 s e o
+`initialize` real leva ~1,7 s, então isso é margem para máquina carregada — não uma
+necessidade. Se você forçar um teto duro por chamada, use o campo `timeout` (ms) no
+registro e **não** desça abaixo de 30 min, que é o default de silêncio em stdio. Detalhes
+em [Timeouts](#timeouts-quanto-esperar-do-d3-edge-e-como-não-ser-cortado).
 
 **Não passe `--root-dir`**: o Claude Code inicia o servidor com cwd igual ao diretório do
 projeto, e o padrão `.` passa a indexar o repositório em que você está aberto — um único
@@ -366,6 +450,10 @@ Numa sessão nova, peça uma busca conceitual e confira a resposta:
 | Hook não dispara | caminho relativo no `settings.json`, script sem permissão, ou sessão não reiniciada |
 | `brain_exec` não aparece | `--exec-disabled` ativo |
 | Agente ainda relê | instrução ausente no `CLAUDE.md` e/ou hook não registrado |
+| Servidor `✗ Failed to connect` | handshake acima de `MCP_TIMEOUT` (30 s) — suba a variável |
+| Ferramentas do brain ausentes numa sessão só | sessão iniciada antes do servidor ser registrado; reinicie |
+| Busca leva segundos | contenção de GPU: várias sessões, uma instância do servidor cada |
+| Busca correta mas lenta na 1ª chamada | forward pass frio do `d3-edge`; ~1 s, não é erro |
 
 ---
 

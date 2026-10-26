@@ -119,7 +119,7 @@ impl MapTool {
                 "### Mapa do projeto — {} arquivos, {total_symbols} símbolos (mais centrais primeiro)",
                 files.len()
             ),
-            body: String::new(),
+            body: graph.resolution.disclosure(),
             priority: 255,
         }];
 

@@ -81,8 +81,7 @@ impl GraphTraversal {
 
             let mut body = String::new();
             if !center_node.signature.is_empty() {
-                body.push_str(&format!("**Assinatura:** `{}`
-", center_node.signature));
+                body.push_str(&format!("**Assinatura:** `{}`\n", center_node.signature));
             }
             sections.push(Section {
                 heading,
@@ -161,9 +160,11 @@ impl GraphTraversal {
 
         let mut sections = Vec::new();
 
+        // The disclosure rides on the headline section, so it survives every
+        // truncation: a budget must never hide that the answer is partial.
         sections.push(Section {
             heading: format!("### Relatório de Análise de Impacto: `{symbol_name}`"),
-            body: String::new(),
+            body: graph.resolution.disclosure(),
             priority: 255,
         });
 
@@ -211,9 +212,14 @@ impl GraphTraversal {
             }
 
             if impacted.is_empty() {
+                // "No callers" and "no callers the graph could prove" are
+                // different claims, and this is the one an agent acts on when
+                // deleting code.
                 sections.push(Section {
-                    heading: "✅ **Impacto Seguro**: Nenhuma chamada ou referência ativa encontrada no projeto para este símbolo.".to_string(),
-                    body: String::new(),
+                    heading: "⚠️ **Nenhum chamador encontrado no grafo** — não é o mesmo que não haver chamadores.".to_string(),
+                    // The disclosure already rides on the headline; repeating it
+                    // here would spend tokens on the same sentence.
+                    body: "Nenhuma aresta de chamada chega a este símbolo.".to_string(),
                     priority: 255,
                 });
                 continue;

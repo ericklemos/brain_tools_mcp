@@ -214,7 +214,15 @@ impl AssertTool {
             let boundary = scope
                 .map(|s| format!(" de fora de `{s}`"))
                 .unwrap_or_else(|| " de outro arquivo".to_string());
-            return format!("NÃO — `{symbol}` não é chamada{boundary}.");
+            // A "SIM" is backed by an edge; a "NÃO" is only as strong as the
+            // graph's coverage, and the graph drops calls it cannot place. The
+            // difference matters most exactly here, where the answer is used to
+            // decide a symbol is dead.
+            let caveat = match graph.resolution.disclosure() {
+                d if d.is_empty() => String::new(),
+                d => format!("\n{d}"),
+            };
+            return format!("NÃO — `{symbol}` não é chamada{boundary}.{caveat}");
         }
 
         format!(
