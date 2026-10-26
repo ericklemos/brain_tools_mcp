@@ -19,6 +19,7 @@ metal = ["brain-engine/metal"]
 brain-kernel = { path = "../brain-kernel" }
 brain-search = { path = "../brain-search" }
 brain-graph = { path = "../brain-graph" }
+brain-exec = { path = "../brain-exec" }
 brain-engine = { path = "../brain-engine" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

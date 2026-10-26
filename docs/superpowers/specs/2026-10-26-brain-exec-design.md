@@ -106,10 +106,10 @@ Lê o stdout linha a linha como JSON e considera só `reason: "compiler-message"
 - **Erros em expansão de macro** (`span.expansion`) são atribuídos ao call-site e
   marcados `(em macro)`. Sem isso o mesmo erro aparece N vezes com spans quase idênticos.
 - **Renderização por entrada:** `arquivo:linha` · nível · código · primeira linha da
-  `message` · a linha-fonte com o `^` do span primário. O JSON do `cargo` traz o span
-  (`line_start`, `column_start`, `column_end`) mas **não** o texto da linha; o parser lê
-  essa linha do arquivo em disco. Falha de leitura apenas omite a linha-fonte — nunca
-  descarta o diagnóstico.
+  `message` · a linha-fonte com o `^` do span primário. O JSON do `cargo` já carrega
+  tudo isso em `spans[].text[]` (`text`, `highlight_start`, `highlight_end`), então o
+  parser **não** relê o arquivo em disco: o relatório reflete o que o compilador viu,
+  sem risco de divergir de uma edição concorrente.
 - **Warnings:** apenas a contagem por código e os 3 códigos mais frequentes, cada um com
   um `arquivo:linha` de exemplo. O corpo completo vai para o handle.
 

@@ -64,7 +64,19 @@ async fn test_daemon_smoke_stdio_purity() {
         .expect("Stdout output was not valid JSON-RPC");
     assert_eq!(list_resp.id, Some(RequestId::Int(2)));
     let list_res: ListToolsResult = serde_json::from_value(list_resp.result.unwrap()).unwrap();
-    assert_eq!(list_res.tools.len(), 4);
+    // Pin the names, not just the count: a tool that silently fails to register
+    // and one that registers twice both leave the count looking plausible.
+    let names: Vec<&str> = list_res.tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "brain_search",
+            "brain_context_graph",
+            "brain_impact_check",
+            "brain_peek",
+            "brain_exec",
+        ]
+    );
 
     // Close stdin to gracefully shut down the daemon loop
     drop(stdin);

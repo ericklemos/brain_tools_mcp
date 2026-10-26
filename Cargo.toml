@@ -4,6 +4,7 @@ members = [
     "crates/brain-kernel",
     "crates/brain-search",
     "crates/brain-graph",
+    "crates/brain-exec",
     "crates/brain-engine",
     "crates/brain-tools",
 ]

@@ -47,6 +47,14 @@ pub struct Config {
     /// Total bytes the truncated-response store may hold
     #[arg(long, env = "BRAIN_HANDLE_MAX_BYTES", default_value_t = 67_108_864)]
     pub handle_max_bytes: usize,
+
+    /// Kill a brain_exec run after this many seconds and return what it captured
+    #[arg(long, env = "BRAIN_EXEC_TIMEOUT_SECS", default_value_t = 300)]
+    pub exec_timeout_secs: u64,
+
+    /// Do not register brain_exec, for hosts where spawning processes is not acceptable
+    #[arg(long, env = "BRAIN_EXEC_DISABLED", default_value_t = false)]
+    pub exec_disabled: bool,
 }
 
 impl Config {

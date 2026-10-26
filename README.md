@@ -21,6 +21,13 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
 3. **`brain_impact_check` (Análise de Impacto Reverso):**
    - Percorre dependências reversas transitivas no grafo para apontar todos os pontos do repositório que quebram caso uma assinatura seja modificada.
 
+4. **`brain_exec` (Build e Testes Resumidos):**
+   - Roda `build`, `check`, `test` ou `clippy` — um enum fechado, nunca uma string de comando.
+   - Parseia `--message-format=json` do cargo: erros agrupados por `(código, arquivo)`, span e linha-fonte vindos do próprio compilador. Warnings viram contagem por código.
+   - Em `test`, a saída do libtest é fatiada por `---- <teste> stdout ----`: o bloco do assert fica intacto, o miolo é omitido.
+   - Cache por hash do conteúdo indexado + estado dos manifests: repetir sem mudar nada devolve uma linha.
+   - Um build com 40 erros sai em ~1.300 caracteres, com o restante recuperável por `brain_peek`.
+
 4. **Sincronização Incremental em Segundo Plano:**
    - Watcher assíncrono via `notify` e `blake3`.
    - Ao salvar um arquivo no editor, o grafo atualiza apenas os nós modificados em milissegundos sem reindexar o projeto todo.
@@ -103,6 +110,8 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 | `--gpu-layers` | `33` | Camadas offloaded para a GPU. |
 | `--min-confidence` | `0.65` | Confiança mínima para aprovar um bloco (0.0–1.0). |
 | `--max-results` | `5` | Máximo de recortes retornados. |
+| `--exec-timeout-secs` | `300` | Mata o `brain_exec` após N segundos e devolve o parcial. |
+| `--exec-disabled` | `false` | Não registra `brain_exec`, para hosts onde spawn de processo não é aceitável. |
 
 Todas aceitam variável de ambiente equivalente (`BRAIN_ROOT_DIR`, `BRAIN_GPU_LAYERS`,
 `BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `RUST_LOG`).
@@ -186,9 +195,11 @@ como um plugin registrado nele.
 
 ```
 crates/
-  brain-kernel/   protocol (JSON-RPC), tipos AST, AstChunker, Config, Registry/ToolPlugin
+  brain-kernel/   protocol (JSON-RPC), tipos AST, AstChunker, Config, Registry/ToolPlugin,
+                  budget/Section, ResponseStore, brain_peek
   brain-search/   scanner léxico + brain_search
   brain-graph/    grafo de código, watcher, brain_context_graph, brain_impact_check
+  brain-exec/     runner do cargo, parsers (JSON e libtest), cache + brain_exec
   brain-engine/   inferência GGUF (llama-cpp-2 isolado aqui)
   brain-tools/    binário, monta o Registry em main.rs e re-exporta os caminhos antigos
 ```

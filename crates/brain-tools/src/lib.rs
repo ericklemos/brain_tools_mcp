@@ -42,3 +42,10 @@ pub mod engine {
     pub use brain_engine::{actor, llama_validator, prompt};
     pub use brain_engine::{LlamaValidator, PromptBuilder, ValidationClient, ValidationJob};
 }
+
+/// Adapter wiring the code graph's hashes into `brain_exec`'s cache.
+pub mod graph_sources;
+
+pub mod exec {
+    pub use brain_exec::{ExecParams, ExecTool, Kind, SourceHashes};
+}

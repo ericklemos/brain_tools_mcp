@@ -130,6 +130,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-exec"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "brain-kernel",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "brain-graph"
 version = "0.1.0"
 dependencies = [
@@ -141,6 +154,7 @@ dependencies = [
  "serde",
  "serde_json",
  "streaming-iterator",
+ "tempfile",
  "tokio",
  "tracing",
  "tree-sitter",
@@ -152,6 +166,7 @@ dependencies = [
 name = "brain-kernel"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "clap",
  "serde",
  "serde_json",
@@ -176,6 +191,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -186,6 +202,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "brain-engine",
+ "brain-exec",
  "brain-graph",
  "brain-kernel",
  "brain-search",

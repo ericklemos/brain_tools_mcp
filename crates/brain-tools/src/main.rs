@@ -2,10 +2,12 @@ use brain_graph::builder::GraphBuilder;
 use brain_graph::graph_tool::{GraphContextTool, GraphImpactTool, GraphHandler};
 use brain_graph::watcher::GraphWatcher;
 use brain_engine::ValidationClient;
+use brain_exec::ExecTool;
 use brain_kernel::peek_tool::PeekTool;
 use brain_kernel::store::ResponseStore;
 use brain_kernel::{Config, Registry};
 use brain_search::SearchHandler;
+use brain_tools::graph_sources::sources_from;
 use brain_tools::mcp::server::McpServer;
 use clap::Parser;
 use std::sync::Arc;
@@ -62,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     let graph_handler = Arc::new(
-        GraphHandler::new(&config.root_dir, code_graph)
+        GraphHandler::new(&config.root_dir, code_graph.clone())
             .with_budget(store.clone(), config.default_budget_tokens),
     );
 
@@ -78,8 +80,27 @@ async fn main() -> anyhow::Result<()> {
         .register(Arc::new(GraphImpactTool::new(graph_handler)))
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
-        .register(Arc::new(PeekTool::new(store, config.default_budget_tokens)))
+        .register(Arc::new(PeekTool::new(
+            store.clone(),
+            config.default_budget_tokens,
+        )))
         .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Appended last so the existing `tools/list` order is unchanged.
+    if config.exec_disabled {
+        tracing::info!("brain_exec disabled by configuration");
+    } else {
+        let exec_tool = ExecTool::new(
+            &config.root_dir,
+            store,
+            config.default_budget_tokens,
+            Duration::from_secs(config.exec_timeout_secs),
+        )
+        .with_sources(sources_from(code_graph));
+        registry
+            .register(Arc::new(exec_tool))
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
 
     let server = McpServer::new(Arc::new(registry));
 

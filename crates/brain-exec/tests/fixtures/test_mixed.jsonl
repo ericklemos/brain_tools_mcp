@@ -1,0 +1,68 @@
+{"reason":"compiler-artifact","package_id":"path+file:///tmp/bx_t#0.1.0","manifest_path":"/tmp/bx_t/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"bx_t","src_path":"/tmp/bx_t/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/bx_t/target/debug/deps/libbx_t-4873b260f3359028.rlib","/tmp/bx_t/target/debug/deps/libbx_t-4873b260f3359028.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"path+file:///tmp/bx_t#0.1.0","manifest_path":"/tmp/bx_t/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"bx_t","src_path":"/tmp/bx_t/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":[],"filenames":["/tmp/bx_t/target/debug/deps/bx_t-f17c2176796e5aca"],"executable":"/tmp/bx_t/target/debug/deps/bx_t-f17c2176796e5aca","fresh":true}
+{"reason":"build-finished","success":true}
+
+running 3 tests
+test tests::failing_plain ... FAILED
+test tests::failing_with_noise ... FAILED
+test tests::passing_one ... ok
+
+failures:
+
+---- tests::failing_plain stdout ----
+
+thread 'tests::failing_plain' (378669) panicked at src/lib.rs:18:9:
+assertion `left == right` failed
+  left: 2
+ right: 3
+
+---- tests::failing_with_noise stdout ----
+noise line 0
+noise line 1
+noise line 2
+noise line 3
+noise line 4
+noise line 5
+noise line 6
+noise line 7
+noise line 8
+noise line 9
+noise line 10
+noise line 11
+noise line 12
+noise line 13
+noise line 14
+noise line 15
+noise line 16
+noise line 17
+noise line 18
+noise line 19
+noise line 20
+noise line 21
+noise line 22
+noise line 23
+noise line 24
+noise line 25
+noise line 26
+noise line 27
+noise line 28
+noise line 29
+
+thread 'tests::failing_with_noise' (378670) panicked at src/lib.rs:13:9:
+assertion `left == right` failed
+  left: 4
+ right: 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::failing_plain
+    tests::failing_with_noise
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
