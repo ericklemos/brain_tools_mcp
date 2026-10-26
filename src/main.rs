@@ -1,5 +1,7 @@
+use brain_tools::mcp::server::{EmptyDispatcher, McpServer};
 use brain_tools::Config;
 use clap::Parser;
+use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
@@ -23,6 +25,12 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::warn!("No GGUF model configured or found; operating in lexical/AST fallback mode");
     }
+
+    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    let stdout = tokio::io::stdout();
+    let server = McpServer::new(Arc::new(EmptyDispatcher));
+
+    server.run_loop(stdin, stdout).await?;
 
     Ok(())
 }
