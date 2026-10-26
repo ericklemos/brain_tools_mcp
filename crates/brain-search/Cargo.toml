@@ -1,0 +1,19 @@
+[package]
+name = "brain-search"
+description = "brain_search tool: lexical scanning, AST snippets, semantic validation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+brain-kernel = { path = "../brain-kernel" }
+brain-engine = { path = "../brain-engine" }
+ignore = { workspace = true }
+grep-searcher = { workspace = true }
+grep-regex = { workspace = true }
+grep-matcher = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,33 @@
+[package]
+name = "brain-tools"
+description = "High-performance local MCP server for surgical code search, context graph and impact analysis"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "brain-tools"
+path = "src/main.rs"
+
+[features]
+default = []
+cuda = ["brain-engine/cuda"]
+vulkan = ["brain-engine/vulkan"]
+metal = ["brain-engine/metal"]
+
+[dependencies]
+brain-kernel = { path = "../brain-kernel" }
+brain-search = { path = "../brain-search" }
+brain-graph = { path = "../brain-graph" }
+brain-engine = { path = "../brain-engine" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

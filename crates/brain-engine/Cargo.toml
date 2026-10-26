@@ -1,0 +1,19 @@
+[package]
+name = "brain-engine"
+description = "Local GGUF inference: LlamaValidator actor and prompt building"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+cuda = ["llama-cpp-2/cuda"]
+vulkan = ["llama-cpp-2/vulkan"]
+metal = ["llama-cpp-2/metal"]
+
+[dependencies]
+brain-kernel = { path = "../brain-kernel" }
+llama-cpp-2 = { workspace = true }
+crossbeam-channel = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

@@ -119,34 +119,82 @@ dependencies = [
 ]
 
 [[package]]
-name = "brain-tools"
+name = "brain-engine"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "blake3",
- "clap",
+ "brain-kernel",
  "crossbeam-channel",
- "dashmap",
+ "llama-cpp-2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "brain-graph"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "brain-kernel",
+ "ignore",
+ "notify",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "streaming-iterator",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+]
+
+[[package]]
+name = "brain-kernel"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-kotlin-ng",
+ "tree-sitter-rust",
+]
+
+[[package]]
+name = "brain-search"
+version = "0.1.0"
+dependencies = [
+ "brain-engine",
+ "brain-kernel",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
  "ignore",
- "llama-cpp-2",
- "notify",
- "petgraph",
  "regex",
  "serde",
  "serde_json",
- "streaming-iterator",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "brain-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brain-engine",
+ "brain-graph",
+ "brain-kernel",
+ "brain-search",
+ "clap",
+ "serde",
+ "serde_json",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-kotlin-ng",
- "tree-sitter-rust",
 ]
 
 [[package]]
@@ -313,20 +361,6 @@ name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
-
-[[package]]
-name = "dashmap"
-version = "6.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
 
 [[package]]
 name = "either"
@@ -520,12 +554,6 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-
-[[package]]
-name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
@@ -559,7 +587,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
- "hashbrown 0.17.1",
+ "hashbrown",
 ]
 
 [[package]]

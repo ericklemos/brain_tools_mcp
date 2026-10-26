@@ -1,21 +1,22 @@
-[package]
-name = "brain-tools"
+[workspace]
+resolver = "2"
+members = [
+    "crates/brain-kernel",
+    "crates/brain-search",
+    "crates/brain-graph",
+    "crates/brain-engine",
+    "crates/brain-tools",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 authors = ["Brain Tools Contributors"]
-description = "High-performance local MCP server for surgical code search, context graph and impact analysis"
 
-[features]
-default = []
-cuda = ["llama-cpp-2/cuda"]
-vulkan = ["llama-cpp-2/vulkan"]
-metal = ["llama-cpp-2/metal"]
-
-[dependencies]
+[workspace.dependencies]
 # Tokio async ecosystem
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-dashmap = "6.1"
 crossbeam-channel = "0.5"
 
 # Tracing & Logging (strictly to stderr)
@@ -43,6 +44,7 @@ grep-matcher = "0.1"
 # Tree-sitter & Language Grammars
 tree-sitter = "0.24"
 tree-sitter-rust = "0.23"
+tree-sitter-kotlin-ng = "1.1.0"
 streaming-iterator = "0.1"
 
 # Graph Engine & Incremental Invalidation
@@ -52,8 +54,6 @@ notify = "6.1"
 
 # Local LLM Inference Engine (GGUF)
 llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common"] }
-tree-sitter-kotlin-ng = "1.1.0"
 
-[dev-dependencies]
+# Dev
 tempfile = "3.10"
-
