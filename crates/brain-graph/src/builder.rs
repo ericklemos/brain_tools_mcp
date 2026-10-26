@@ -1,7 +1,7 @@
-use crate::error::{BrainError, Result};
-use crate::graph::model::*;
-use crate::graph::queries::GraphQueries;
-use crate::search::ast_chunker::SupportedLanguage;
+use brain_kernel::{BrainError, Result};
+use crate::model::*;
+use crate::queries::GraphQueries;
+use brain_kernel::ast::SupportedLanguage;
 use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
 use std::collections::HashMap;

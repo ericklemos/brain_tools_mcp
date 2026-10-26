@@ -12,6 +12,8 @@ notify = { workspace = true }
 blake3 = { workspace = true }
 ignore = { workspace = true }
 tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-kotlin-ng = { workspace = true }
 streaming-iterator = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

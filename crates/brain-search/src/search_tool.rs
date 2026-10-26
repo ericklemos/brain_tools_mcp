@@ -1,10 +1,11 @@
-use crate::engine::ValidationClient;
-use crate::mcp::protocol::CallToolResult;
-use crate::search::ast_chunker::AstChunker;
-use crate::search::scanner::LexicalScanner;
+use brain_engine::ValidationClient;
+use brain_kernel::ast::AstChunker;
+use brain_kernel::protocol::CallToolResult;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+use crate::scanner::LexicalScanner;
 
 #[derive(Debug, Deserialize)]
 pub struct BrainSearchParams {
@@ -151,65 +152,5 @@ impl SearchHandler {
         }
 
         CallToolResult::text(out)
-    }
-}
-
-pub struct GraphHandler {
-    root_dir: PathBuf,
-    graph: std::sync::Arc<tokio::sync::RwLock<crate::graph::model::ProjectCodeGraph>>,
-}
-
-impl GraphHandler {
-    pub fn new(
-        root_dir: impl Into<PathBuf>,
-        graph: std::sync::Arc<tokio::sync::RwLock<crate::graph::model::ProjectCodeGraph>>,
-    ) -> Self {
-        Self {
-            root_dir: root_dir.into(),
-            graph,
-        }
-    }
-
-    pub async fn handle_context_graph(&self, arguments: serde_json::Value) -> CallToolResult {
-        #[derive(Deserialize)]
-        struct Params {
-            target_symbol_or_file: String,
-            depth: Option<usize>,
-        }
-
-        let params: Params = match serde_json::from_value(arguments) {
-            Ok(p) => p,
-            Err(e) => return CallToolResult::error(format!("Invalid arguments: {e}")),
-        };
-
-        let depth = params.depth.unwrap_or(1);
-        let lock = self.graph.read().await;
-        let markdown = crate::graph::traversal::GraphTraversal::context_graph(
-            &lock,
-            &params.target_symbol_or_file,
-            depth,
-            &self.root_dir,
-        );
-        CallToolResult::text(markdown)
-    }
-
-    pub async fn handle_impact_check(&self, arguments: serde_json::Value) -> CallToolResult {
-        #[derive(Deserialize)]
-        struct Params {
-            symbol_name: String,
-        }
-
-        let params: Params = match serde_json::from_value(arguments) {
-            Ok(p) => p,
-            Err(e) => return CallToolResult::error(format!("Invalid arguments: {e}")),
-        };
-
-        let lock = self.graph.read().await;
-        let markdown = crate::graph::traversal::GraphTraversal::impact_check(
-            &lock,
-            &params.symbol_name,
-            &self.root_dir,
-        );
-        CallToolResult::text(markdown)
     }
 }

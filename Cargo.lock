@@ -144,6 +144,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tree-sitter",
+ "tree-sitter-kotlin-ng",
+ "tree-sitter-rust",
 ]
 
 [[package]]

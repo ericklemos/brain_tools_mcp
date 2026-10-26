@@ -1,5 +1,5 @@
-use crate::error::{BrainError, Result};
-use crate::search::ast_chunker::SupportedLanguage;
+use brain_kernel::{BrainError, Result};
+use brain_kernel::ast::SupportedLanguage;
 use tree_sitter::Query;
 
 pub struct GraphQueries {

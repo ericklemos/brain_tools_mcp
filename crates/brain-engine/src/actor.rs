@@ -1,7 +1,7 @@
-use crate::engine::llama_validator::LlamaValidator;
-use crate::error::Result;
-use crate::search::ast_chunker::AstSnippet;
-use crate::search::ranker::{LexicalRanker, ScoredSnippet};
+use crate::llama_validator::LlamaValidator;
+use brain_kernel::{BrainError, Result};
+use brain_kernel::ast::AstSnippet;
+use brain_kernel::ranking::{LexicalRanker, ScoredSnippet};
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 
@@ -110,10 +110,10 @@ impl ValidationClient {
         self.tx
             .send(job)
             .await
-            .map_err(|e| crate::error::BrainError::Inference(format!("Actor channel error: {e}")))?;
+            .map_err(|e| BrainError::Inference(format!("Actor channel error: {e}")))?;
 
         response_rx
             .await
-            .map_err(|e| crate::error::BrainError::Inference(format!("Actor response error: {e}")))
+            .map_err(|e| BrainError::Inference(format!("Actor response error: {e}")))
     }
 }

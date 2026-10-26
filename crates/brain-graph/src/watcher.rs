@@ -1,6 +1,6 @@
-use crate::error::Result;
-use crate::graph::builder::GraphBuilder;
-use crate::graph::model::ProjectCodeGraph;
+use brain_kernel::{BrainError, Result};
+use crate::builder::GraphBuilder;
+use crate::model::ProjectCodeGraph;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,11 +36,11 @@ impl GraphWatcher {
             },
             Config::default(),
         )
-        .map_err(|e| crate::error::BrainError::Graph(format!("Notify error: {e}")))?;
+        .map_err(|e| BrainError::Graph(format!("Notify error: {e}")))?;
 
         watcher
             .watch(&root_dir, RecursiveMode::Recursive)
-            .map_err(|e| crate::error::BrainError::Graph(format!("Watch error: {e}")))?;
+            .map_err(|e| BrainError::Graph(format!("Watch error: {e}")))?;
 
         let root_clone = root_dir.clone();
         tokio::spawn(async move {

@@ -1,7 +1,7 @@
-use crate::engine::prompt::PromptBuilder;
-use crate::error::{BrainError, Result};
-use crate::search::ast_chunker::AstSnippet;
-use crate::search::ranker::ScoredSnippet;
+use crate::prompt::PromptBuilder;
+use brain_kernel::{BrainError, Result};
+use brain_kernel::ast::AstSnippet;
+use brain_kernel::ranking::ScoredSnippet;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;

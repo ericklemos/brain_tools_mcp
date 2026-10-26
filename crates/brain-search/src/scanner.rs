@@ -1,4 +1,4 @@
-use crate::error::{BrainError, Result};
+use brain_kernel::{BrainError, Result};
 use grep_regex::RegexMatcher;
 use grep_searcher::{SearcherBuilder, Sink, SinkMatch};
 use ignore::types::TypesBuilder;

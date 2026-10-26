@@ -1,4 +1,4 @@
-use crate::graph::model::ProjectCodeGraph;
+use crate::model::ProjectCodeGraph;
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use std::collections::HashSet;
