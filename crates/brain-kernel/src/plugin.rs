@@ -19,6 +19,25 @@ pub trait ToolPlugin: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = CallToolResult> + Send + '_>>;
 }
 
+/// Lets an `Arc<Plugin>` be registered directly, so callers holding an `Arc`
+/// for another reason (a handler shared between plugins) need no adapter.
+impl<T: ToolPlugin + ?Sized> ToolPlugin for Arc<T> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn schema(&self) -> Tool {
+        (**self).schema()
+    }
+
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = CallToolResult> + Send + '_>> {
+        (**self).call(args)
+    }
+}
+
 /// The single seam between the MCP transport and the tools.
 pub trait ToolDispatcher: Send + Sync {
     fn list_tools(&self) -> Vec<Tool>;

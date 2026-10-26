@@ -1,78 +1,7 @@
-use crate::mcp::protocol::*;
+use brain_kernel::plugin::ToolDispatcher;
+use brain_kernel::protocol::*;
 use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
-
-pub trait ToolDispatcher: Send + Sync {
-    fn list_tools(&self) -> Vec<Tool>;
-    fn call_tool(
-        &self,
-        name: &str,
-        arguments: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CallToolResult> + Send + '_>>;
-}
-
-#[derive(Default)]
-pub struct EmptyDispatcher;
-
-impl ToolDispatcher for EmptyDispatcher {
-    fn list_tools(&self) -> Vec<Tool> {
-        vec![]
-    }
-
-    fn call_tool(
-        &self,
-        name: &str,
-        _arguments: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CallToolResult> + Send + '_>> {
-        let msg = format!("Tool not found: {}", name);
-        Box::pin(async move { CallToolResult::error(msg) })
-    }
-}
-
-pub struct BrainToolDispatcher {
-    search_handler: Arc<crate::mcp::handlers::SearchHandler>,
-    graph_handler: Arc<crate::mcp::handlers::GraphHandler>,
-}
-
-impl BrainToolDispatcher {
-    pub fn new(
-        search_handler: Arc<crate::mcp::handlers::SearchHandler>,
-        graph_handler: Arc<crate::mcp::handlers::GraphHandler>,
-    ) -> Self {
-        Self {
-            search_handler,
-            graph_handler,
-        }
-    }
-}
-
-impl ToolDispatcher for BrainToolDispatcher {
-    fn list_tools(&self) -> Vec<Tool> {
-        vec![
-            crate::mcp::schemas::brain_search_tool(),
-            crate::mcp::schemas::brain_context_graph_tool(),
-            crate::mcp::schemas::brain_impact_check_tool(),
-        ]
-    }
-
-    fn call_tool(
-        &self,
-        name: &str,
-        arguments: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CallToolResult> + Send + '_>> {
-        let name = name.to_string();
-        let search_handler = self.search_handler.clone();
-        let graph_handler = self.graph_handler.clone();
-        Box::pin(async move {
-            match name.as_str() {
-                "brain_search" => search_handler.handle_brain_search(arguments).await,
-                "brain_context_graph" => graph_handler.handle_context_graph(arguments).await,
-                "brain_impact_check" => graph_handler.handle_impact_check(arguments).await,
-                _ => CallToolResult::error(format!("Unknown tool: {name}")),
-            }
-        })
-    }
-}
 
 pub struct McpServer {
     dispatcher: Arc<dyn ToolDispatcher>,
@@ -199,5 +128,55 @@ impl McpServer {
 
         tracing::info!("MCP stdio connection closed");
         Ok(())
+    }
+}
+
+/// Legacy two-handler wiring, kept so existing integrations keep compiling.
+///
+/// Builds a [`brain_kernel::Registry`] from the concrete handlers and
+/// delegates to it, so there is one dispatch path in the process.
+pub struct BrainToolDispatcher {
+    registry: brain_kernel::Registry,
+}
+
+impl BrainToolDispatcher {
+    pub fn new(
+        search_handler: Arc<brain_search::SearchHandler>,
+        graph_handler: Arc<brain_graph::GraphHandler>,
+    ) -> Self {
+        let mut registry = brain_kernel::Registry::new();
+        // Distinct, constant names — a duplicate here is a programming error.
+        registry
+            .register(search_handler)
+            .expect("brain_search registered once");
+        registry
+            .register(Arc::new(brain_graph::graph_tool::GraphContextTool::new(
+                graph_handler.clone(),
+            )))
+            .expect("brain_context_graph registered once");
+        registry
+            .register(Arc::new(brain_graph::graph_tool::GraphImpactTool::new(
+                graph_handler,
+            )))
+            .expect("brain_impact_check registered once");
+        Self { registry }
+    }
+}
+
+impl ToolDispatcher for BrainToolDispatcher {
+    fn list_tools(&self) -> Vec<brain_kernel::protocol::Tool> {
+        self.registry.list_tools()
+    }
+
+    fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = brain_kernel::protocol::CallToolResult> + Send + '_,
+        >,
+    > {
+        self.registry.call_tool(name, arguments)
     }
 }
