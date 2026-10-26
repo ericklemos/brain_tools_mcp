@@ -1,4 +1,6 @@
-use brain_tools::mcp::server::{EmptyDispatcher, McpServer};
+use brain_tools::engine::ValidationClient;
+use brain_tools::mcp::handlers::SearchHandler;
+use brain_tools::mcp::server::{BrainToolDispatcher, McpServer};
 use brain_tools::Config;
 use clap::Parser;
 use std::sync::Arc;
@@ -20,15 +22,26 @@ async fn main() -> anyhow::Result<()> {
         "Starting brain-tools MCP server daemon"
     );
 
-    if let Some(model_path) = config.resolved_model_path() {
+    let resolved_model = config.resolved_model_path();
+    if let Some(ref model_path) = resolved_model {
         tracing::info!(model_path = %model_path.display(), "Using GGUF model for validation");
     } else {
         tracing::warn!("No GGUF model configured or found; operating in lexical/AST fallback mode");
     }
 
+    let validator = ValidationClient::new(resolved_model, config.gpu_layers);
+    let search_handler = Arc::new(SearchHandler::new(
+        &config.root_dir,
+        validator,
+        config.default_max_results,
+        config.default_min_confidence,
+    ));
+
+    let dispatcher = Arc::new(BrainToolDispatcher::new(search_handler));
+    let server = McpServer::new(dispatcher);
+
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
     let stdout = tokio::io::stdout();
-    let server = McpServer::new(Arc::new(EmptyDispatcher));
 
     server.run_loop(stdin, stdout).await?;
 

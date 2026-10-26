@@ -29,6 +29,37 @@ impl ToolDispatcher for EmptyDispatcher {
     }
 }
 
+pub struct BrainToolDispatcher {
+    search_handler: Arc<crate::mcp::handlers::SearchHandler>,
+}
+
+impl BrainToolDispatcher {
+    pub fn new(search_handler: Arc<crate::mcp::handlers::SearchHandler>) -> Self {
+        Self { search_handler }
+    }
+}
+
+impl ToolDispatcher for BrainToolDispatcher {
+    fn list_tools(&self) -> Vec<Tool> {
+        vec![crate::mcp::schemas::brain_search_tool()]
+    }
+
+    fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CallToolResult> + Send + '_>> {
+        let name = name.to_string();
+        let search_handler = self.search_handler.clone();
+        Box::pin(async move {
+            match name.as_str() {
+                "brain_search" => search_handler.handle_brain_search(arguments).await,
+                _ => CallToolResult::error(format!("Unknown tool: {name}")),
+            }
+        })
+    }
+}
+
 pub struct McpServer {
     dispatcher: Arc<dyn ToolDispatcher>,
 }
