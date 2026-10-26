@@ -34,6 +34,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # Ripgrep Lexical Search Engine
+regex = "1.10"
 ignore = "0.4"
 grep-searcher = "0.1"
 grep-regex = "0.1"
@@ -52,3 +53,7 @@ notify = "6.1"
 
 # Local LLM Inference Engine (GGUF)
 llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common"] }
+
+[dev-dependencies]
+tempfile = "3.10"
+
