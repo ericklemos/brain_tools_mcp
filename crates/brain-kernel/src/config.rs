@@ -36,6 +36,10 @@ pub struct Config {
     #[arg(long, env = "BRAIN_MAX_RESULTS", default_value_t = 5)]
     pub default_max_results: usize,
 
+    /// How many candidates (best lexical matches) reach the semantic model
+    #[arg(long, env = "BRAIN_MAX_VALIDATE_CANDIDATES", default_value_t = 24)]
+    pub max_validate_candidates: usize,
+
     /// Default approximate token budget for tool responses
     #[arg(long, env = "BRAIN_BUDGET_TOKENS", default_value_t = 2000)]
     pub default_budget_tokens: usize,

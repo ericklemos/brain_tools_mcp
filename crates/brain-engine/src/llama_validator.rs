@@ -32,6 +32,18 @@ fn required_n_batch(prefix_tokens: usize, candidate_tokens: &[usize]) -> u32 {
     needed.min(N_CTX as usize) as u32
 }
 
+/// Result of judging a whole batch.
+///
+/// `skipped` is the part the caller cannot afford to lose: a candidate the
+/// model failed to decode is *unjudged*, not rejected, and reporting it as
+/// "did not match" silently degrades the search to a lexical one.
+#[derive(Debug, Default, Clone)]
+pub struct BatchValidation {
+    pub scored: Vec<ScoredSnippet>,
+    /// Candidates that could not be decoded and therefore never got a verdict.
+    pub skipped: usize,
+}
+
 pub struct LlamaValidator {
     backend: LlamaBackend,
     model: LlamaModel,
@@ -76,9 +88,9 @@ impl LlamaValidator {
         user_query: &str,
         candidates: Vec<AstSnippet>,
         threshold: f32,
-    ) -> Result<Vec<ScoredSnippet>> {
+    ) -> Result<BatchValidation> {
         if candidates.is_empty() {
-            return Ok(Vec::new());
+            return Ok(BatchValidation::default());
         }
 
         let prefix_str = PromptBuilder::build_prefix(user_query);
@@ -86,7 +98,7 @@ impl LlamaValidator {
             .model
             .vocab()
             .tokenize(prefix_str.as_bytes(), true, true);
-        let n_past_prefix = prefix_tokens.len() as i32;
+        let n_past_prefix = prefix_tokens.len();
 
         // Tokeniza todos os candidatos antes de criar o contexto: o tamanho do
         // batch é fixado na criação e precisa cobrir o maior par prefixo+candidato.
@@ -106,7 +118,14 @@ impl LlamaValidator {
             tokenized.push((candidate, tokens));
         }
 
-        let n_batch = required_n_batch(n_past_prefix as usize, &lengths);
+        let n_batch = required_n_batch(n_past_prefix, &lengths);
+        tracing::debug!(
+            candidates = tokenized.len(),
+            prefix_tokens = n_past_prefix,
+            longest_candidate = lengths.iter().copied().max().unwrap_or(0),
+            n_batch,
+            "Validating candidate batch"
+        );
 
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(N_CTX))
@@ -121,28 +140,55 @@ impl LlamaValidator {
             .map_err(|e| BrainError::Inference(format!("Failed to create LlamaContext: {e}")))?;
 
         let mut batch = LlamaBatch::new(n_batch as usize, 1);
-        for (i, &token) in prefix_tokens.iter().enumerate() {
-            batch
-                .add(token, i as i32, &[0], false)
-                .map_err(|e| BrainError::Inference(format!("Batch add error: {e}")))?;
-        }
-        ctx.decode(&mut batch)
-            .map_err(|e| BrainError::Inference(format!("Prefix decode error: {e}")))?;
-
-        let mut approved = Vec::new();
+        let mut scored = Vec::new();
+        let mut skipped = 0usize;
 
         for (candidate, suffix_tokens) in tokenized {
-            let _ = ctx.clear_kv_cache_seq(Some(0), Some(n_past_prefix as u32), None);
-            batch.clear();
+            let total = n_past_prefix + suffix_tokens.len();
+            if total > N_CTX as usize {
+                tracing::warn!(
+                    symbol = %candidate.symbol_name,
+                    tokens = total,
+                    n_ctx = N_CTX,
+                    "Candidate does not fit the context window; leaving it unjudged"
+                );
+                skipped += 1;
+                continue;
+            }
 
+            // O GGUF híbrido (qwen35) tem camadas recorrentes cuja memória
+            // recusa rollback parcial: `clear_kv_cache_seq(Some(0), Some(w), None)`
+            // devolve `false`, as posições antigas permanecem e o próximo batch
+            // viola a asserção M-RoPE (`X < Y`) do llama.cpp. Limpar a sequência
+            // inteira é a única remoção que sempre funciona (kv_cache.rs:70).
+            let cleared = ctx.clear_kv_cache_seq(Some(0), None, None);
+            if !matches!(cleared, Ok(true)) {
+                ctx.clear_kv_cache();
+            }
+
+            // Um único batch com prefixo + candidato: sem reuso de KV entre
+            // candidatos, as posições voltam a começar em zero.
+            batch.clear();
+            for (i, &token) in prefix_tokens.iter().enumerate() {
+                batch
+                    .add(token, i as i32, &[0], false)
+                    .map_err(|e| BrainError::Inference(format!("Batch add error: {e}")))?;
+            }
             for (j, &token) in suffix_tokens.iter().enumerate() {
-                let pos = n_past_prefix + (j as i32);
+                let pos = (n_past_prefix + j) as i32;
                 let is_last = j == suffix_tokens.len() - 1;
-                let _ = batch.add(token, pos, &[0], is_last);
+                batch
+                    .add(token, pos, &[0], is_last)
+                    .map_err(|e| BrainError::Inference(format!("Batch add error: {e}")))?;
             }
 
             if let Err(e) = ctx.decode(&mut batch) {
-                tracing::warn!(error = %e, "Decode failed for candidate, skipping");
+                tracing::warn!(
+                    error = %e,
+                    symbol = %candidate.symbol_name,
+                    "Decode failed for candidate, skipping"
+                );
+                skipped += 1;
                 continue;
             }
 
@@ -168,15 +214,15 @@ impl LlamaValidator {
             };
 
             if prob_yes >= threshold {
-                approved.push(ScoredSnippet {
+                scored.push(ScoredSnippet {
                     snippet: candidate,
                     score: prob_yes,
                 });
             }
         }
 
-        approved.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(approved)
+        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(BatchValidation { scored, skipped })
     }
 }
 

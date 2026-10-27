@@ -44,7 +44,8 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("No GGUF model configured or found; operating in lexical/AST fallback mode");
     }
 
-    let validator = ValidationClient::new(resolved_model, config.gpu_layers);
+    let validator = ValidationClient::new(resolved_model, config.gpu_layers)
+        .with_max_candidates(config.max_validate_candidates);
     let store = Arc::new(ResponseStore::new(
         Duration::from_secs(config.handle_ttl_secs),
         config.handle_max_bytes,

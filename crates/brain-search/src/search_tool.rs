@@ -128,9 +128,9 @@ impl SearchHandler {
         // capped response indistinguishable from a complete one — the agent had
         // no way to tell, so it went to the file to find out.
         let candidate_count = candidates.len();
-        let approved = match self
+        let outcome = match self
             .validator
-            .validate(
+            .validate_with_outcome(
                 params.natural_query.clone(),
                 params.keywords.clone(),
                 candidates,
@@ -139,43 +139,37 @@ impl SearchHandler {
             )
             .await
         {
-            Ok(s) => s,
+            Ok(o) => o,
             Err(e) => return CallToolResult::error(format!("Validation failed: {e}")),
         };
 
-        if approved.is_empty() {
+        if outcome.scored.is_empty() {
             return CallToolResult::text(format!(
                 "Nenhum bloco de código atingiu a confiança mínima exigida ({:.2}).",
                 min_confidence
             ));
         }
 
-        let approved_total = approved.len();
-        let scored: Vec<_> = approved.into_iter().take(max_results.max(1)).collect();
+        let approved_total = outcome.scored.len();
+        let scored: Vec<_> = outcome
+            .scored
+            .into_iter()
+            .take(max_results.max(1))
+            .collect();
 
         // What the response can honestly promise the agent: every section is the
         // verbatim body of its symbol, and whether anything was left out — and
         // why. Both are stated up front so re-opening the file is a choice, not
         // a doubt.
-        let completeness = if approved_total > scored.len() {
-            format!(
-                "#### {} de {} blocos aprovados — o teto max_results={} cortou o resto; aumente max_results para ver mais.",
-                scored.len(),
-                approved_total,
-                max_results
-            )
-        } else if scored.len() < candidate_count {
-            format!(
-                "#### {} de {} candidatas casaram com a query — as demais não são o código pedido.",
-                scored.len(),
-                candidate_count
-            )
-        } else {
-            format!(
-                "#### Todas as {} candidatas casaram com a query.",
-                scored.len()
-            )
-        };
+        let completeness = completeness_line(
+            candidate_count,
+            approved_total,
+            scored.len(),
+            max_results,
+            outcome.considered,
+            outcome.skipped,
+            outcome.lexical_fallback,
+        );
 
         let mut sections = Vec::with_capacity(scored.len() + 1);
 
@@ -250,6 +244,66 @@ impl SearchHandler {
         out.push_str(&budget::render(&selection, handle.as_deref()));
         CallToolResult::text(out)
     }
+}
+
+/// One line the agent can trust: what the response contains, what was left
+/// out, and which of those decisions the semantic model actually made.
+///
+/// `candidate_count` is everything the lexical scan produced; `considered` is
+/// what survived the validation cap; `skipped` is what the model failed to
+/// decode. Collapsing those into "N blocos aprovados" is what let a lexical
+/// fallback pass for a semantic verdict.
+fn completeness_line(
+    candidate_count: usize,
+    approved_total: usize,
+    shown: usize,
+    max_results: usize,
+    considered: usize,
+    skipped: usize,
+    lexical_fallback: bool,
+) -> String {
+    let verdict = if approved_total > shown {
+        // "aprovados" would claim a semantic verdict that never happened when
+        // the lexical ranker did the deciding.
+        let noun = if lexical_fallback {
+            "resultados"
+        } else {
+            "blocos aprovados"
+        };
+        format!(
+            "{} de {} {} — o teto max_results={} cortou o resto; aumente max_results para ver mais.",
+            shown, approved_total, noun, max_results
+        )
+    } else if shown < considered {
+        format!(
+            "{} de {} candidatas casaram com a query — as demais não são o código pedido.",
+            shown, considered
+        )
+    } else {
+        format!("Todas as {} candidatas casaram com a query.", shown)
+    };
+
+    let mut line = format!("#### {verdict}");
+
+    if skipped > 0 {
+        line.push_str(&format!(
+            " {} de {} candidatas não puderam ser julgadas pelo modelo.",
+            skipped, considered
+        ));
+    }
+
+    if considered < candidate_count {
+        line.push_str(&format!(
+            " {} de {} candidatas avaliadas — o teto de validação cortou o resto.",
+            considered, candidate_count
+        ));
+    }
+
+    if lexical_fallback {
+        line.push_str(" Validação semântica indisponível — ranking lexical.");
+    }
+
+    line
 }
 
 impl ToolPlugin for SearchHandler {
@@ -418,5 +472,35 @@ async fn search_with_a_generous_budget_is_unchanged() {
     assert!(!text.contains("Resposta truncada"));
     assert!(text.contains("verify_jwt_token"));
     assert!(text.contains("pub fn verify_jwt_token"));
+}
+
+#[test]
+fn a_lexical_fallback_is_announced_instead_of_pretending_validation_happened() {
+    let text = completeness_line(1, 1, 1, 5, 1, 0, true);
+    assert!(
+        text.contains("Validação semântica indisponível"),
+        "a lexical decision must not read as semantic validation: {text}"
+    );
+    assert!(text.contains("candidatas casaram com a query"));
+}
+
+#[test]
+fn partially_skipped_candidates_are_declared() {
+    let text = completeness_line(5, 3, 3, 5, 5, 2, false);
+    assert!(
+        text.contains("2 de 5 candidatas não puderam ser julgadas"),
+        "skipped candidates must be visible: {text}"
+    );
+    assert!(text.contains("3 de 5 candidatas casaram com a query"));
+}
+
+#[test]
+fn the_validation_cap_is_declared_separately_from_max_results() {
+    let text = completeness_line(100, 5, 5, 5, 24, 0, false);
+    assert!(
+        text.contains("24 de 100 candidatas avaliadas"),
+        "the validation cap must not look like a model judgement: {text}"
+    );
+    assert!(text.contains("5 de 24 candidatas casaram com a query"));
 }
 }
