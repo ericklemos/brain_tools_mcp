@@ -19,3 +19,4 @@ pub mod map_tool;
 pub mod assert_tool;
 pub mod diff_tool;
 pub mod history_tool;
+pub mod trace_tool;

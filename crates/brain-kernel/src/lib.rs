@@ -6,7 +6,7 @@ pub mod protocol;
 pub mod ranking;
 
 pub use ast::{AstChunker, AstSnippet, SupportedLanguage};
-pub use config::Config;
+pub use config::{Config, ToolProfile};
 pub use error::{BrainError, Result};
 pub use plugin::{EmptyDispatcher, Registry, ToolDispatcher, ToolPlugin};
 pub use ranking::{LexicalRanker, ScoredSnippet};

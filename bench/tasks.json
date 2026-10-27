@@ -201,6 +201,22 @@
       ]
     },
     {
+      "id": "trace-handle-context",
+      "question": "handle_context_graph chega em context_sections?",
+      "naive": [
+        "crates/brain-graph/src/graph_tool.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_trace",
+          "arguments": {
+            "from": "handle_context_graph",
+            "to": "context_sections"
+          }
+        }
+      ]
+    },
+    {
       "id": "repeticao-mesmo-trecho",
       "question": "Fluxo real: reler o mesmo símbolo que a sessão já recebeu (o ledger deve apontar em vez de reenviar).",
       "naive": [

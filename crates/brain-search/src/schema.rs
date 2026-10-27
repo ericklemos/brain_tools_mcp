@@ -34,6 +34,12 @@ pub fn brain_search_tool() -> Tool {
                     "type": "string",
                     "enum": ["allow"],
                     "description": "`allow` devolve os corpos mesmo se esta sessão já os recebeu; o padrão aponta para o que já foi entregue."
+                },
+                "detail": {
+                    "type": "string",
+                    "enum": ["auto", "full", "signatures"],
+                    "default": "auto",
+                    "description": "auto: corpo dos primeiros resultados e assinatura do resto; full: todos os corpos; signatures: só assinaturas."
                 }
             },
             "required": ["natural_query", "keywords"]

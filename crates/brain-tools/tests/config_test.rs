@@ -1,4 +1,4 @@
-use brain_tools::Config;
+use brain_tools::{Config, ToolProfile};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -16,6 +16,7 @@ fn test_default_config() {
     assert!(config.delivery_ledger, "the ledger is on by default");
     assert_eq!(config.delivery_entries, 512);
     assert_eq!(config.delivery_max_bytes, 8_388_608);
+    assert_eq!(config.tool_profile, ToolProfile::Full);
 }
 
 #[test]
@@ -51,4 +52,12 @@ fn test_custom_cli_args() {
 fn the_delivery_ledger_can_be_turned_off() {
     let config = Config::parse_from(["brain-tools", "--delivery-ledger", "false"]);
     assert!(!config.delivery_ledger);
+}
+
+#[test]
+fn the_tool_profile_can_be_selected_from_the_cli() {
+    let config = Config::parse_from(["brain-tools", "--tools", "core"]);
+    assert_eq!(config.tool_profile, ToolProfile::Core);
+    assert!(ToolProfile::Core.tools().is_some());
+    assert!(ToolProfile::Full.tools().is_none());
 }

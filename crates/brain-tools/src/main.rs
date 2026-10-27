@@ -8,6 +8,7 @@ use brain_graph::graph_tool::{GraphContextTool, GraphImpactTool, GraphHandler};
 use brain_graph::history_tool::HistoryTool;
 use brain_graph::map_tool::MapTool;
 use brain_graph::read_tool::ReadTool;
+use brain_graph::trace_tool::TraceTool;
 use brain_graph::watcher::GraphWatcher;
 use brain_engine::ValidationClient;
 use brain_exec::{ExecTool, ShellTool};
@@ -193,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
     registry
         .register(Arc::new(HistoryTool::new(
             &config.root_dir,
-            code_graph,
+            code_graph.clone(),
             store.clone(),
             config.default_budget_tokens,
         )))
@@ -201,10 +202,29 @@ async fn main() -> anyhow::Result<()> {
     registry
         .register(Arc::new(LedgerTool::new(
             &config.root_dir,
+            store.clone(),
+            config.default_budget_tokens,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(TraceTool::new(
+            &config.root_dir,
+            code_graph,
             store,
             config.default_budget_tokens,
         )))
         .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Schema tokens are paid on every request: a profile is the difference
+    // between exposing 16 tools and exposing the 9 the session can use.
+    if let Some(allowed) = config.tool_profile.tools() {
+        registry.retain(allowed);
+        tracing::info!(
+            profile = ?config.tool_profile,
+            tools = allowed.len(),
+            "Tool profile applied"
+        );
+    }
 
     let server = McpServer::new(Arc::new(registry));
 

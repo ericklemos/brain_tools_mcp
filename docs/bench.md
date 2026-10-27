@@ -58,22 +58,23 @@ Saída típica:
 
 ```
 tarefa                       brain     naïve    fator    tempo  resultado
-busca-orcamento              1.844     7.397     4,0x    16,0s  ok
-fluxo-busca-corpo            1.956    12.927     6,6x    16,6s  ok
+busca-orcamento              1.507     7.397     4,9x    17,7s  ok
+fluxo-busca-corpo            1.162    14.190    12,2x    21,6s  ok
 contexto-handle-diff           488     9.825    20,1x     0,0s  ok
-contexto-arquivo-inteiro     1.969     1.536     0,8x     0,0s  ok
-impacto-select               2.053    28.208    13,7x     0,0s  ok
+contexto-arquivo-inteiro       420     1.536     3,7x     0,0s  ok
+impacto-select               2.051    29.471    14,4x     0,0s  ok
 esqueleto-watcher              103       686     6,7x     0,0s  ok
 esqueleto-arquivo-grande     1.169     9.385     8,0x     0,0s  ok
 corpo-select                   309     2.388     7,7x     0,0s  ok
-mapa-grafo                   2.036    71.909    35,3x     0,0s  ok
-assert-omitted-body            177     9.836    55,6x     0,0s  ok
+mapa-grafo                   2.036    76.284    37,5x     0,0s  ok
+assert-omitted-body            189    11.099    58,7x     0,0s  ok
 porque-build-graph             114     7.475    65,6x     0,0s  ok
+trace-handle-context           142     1.793    12,6x     0,0s  ok
 repeticao-mesmo-trecho         577     9.385    16,3x     0,0s  ok
-TOTAL                       12.795   170.957    13,4x    32,5s
+TOTAL                       10.267   180.914    17,6x    39,4s
 
-schema tools/list: 3.034 tokens em 15 ferramentas (pago a cada requisição, fora das tarefas)
-economia: 92,5% dos tokens que reler os arquivos declarados custaria
+schema tools/list: 3.278 tokens em 16 ferramentas (pago a cada requisição, fora das tarefas)
+economia: 94,3% dos tokens que reler os arquivos declarados custaria
 ```
 
 `fator` é `naïve / brain`: quantas vezes mais caro seria ler. Fator abaixo de
@@ -147,20 +148,20 @@ bom demais costuma ser baseline mal declarado.
 
 - `TOTAL` e `economia` respondem "vale a pena?".
 - `fator` por tarefa responde "onde vale mais?".
-- `schema tools/list` responde "quanto custa manter 15 ferramentas expostas?".
+- `schema tools/list` responde "quanto custa manter 16 ferramentas expostas?".
 - Regressões listam `[task]` e `[schema]` separadamente, porque encolher o
   schema vale mesmo que uma tarefa específica cresça.
 
 O estado atual do repositório mostra os dois lados: `assert` e `why` pagam
-~50–65× menos que reler o arquivo, enquanto `brain_context_graph` num arquivo
-inteiro custa **mais** que abrir esse arquivo.
+~55–65× menos que reler o arquivo. `brain_context_graph` num arquivo inteiro
+custava **mais** que abrir esse arquivo (0,8×); o digest de uma linha por símbolo
+trocou o relatório repetido por fan-in/fan-out e o caso passou a pagar 3,7×.
 
-Esse segundo caso já foi corrigido uma vez — arestas duplicadas e seções vazias
-repetidas por símbolo — e o número não mudou: a resposta **satura** o budget de
-2000 tokens, então remover ruído só faz caber mais sinal no mesmo teto. É a
-diferença entre "gasta menos" e "gasta melhor", e é por isso que a tarefa
-continua no benchmark: um `context_graph` de arquivo inteiro não é uma economia
-de tokens enquanto o teto for o que decide o tamanho.
+Esse caso já tinha sido corrigido uma vez só na formatação — arestas duplicadas
+e seções vazias repetidas — e o número não mudou: a resposta **saturava** o budget
+de 2000 tokens, então remover ruído só fazia caber mais sinal no mesmo teto. É a
+diferença entre "gasta menos" e "gasta melhor": o que resolveu foi mudar o desenho
+da chamada, não o espaçamento.
 
 Regra prática ao ler um número que não muda: se `brain` está colado no budget
 (`2.000` + envelope), a ferramenta está truncando. Aí o ganho tem que aparecer

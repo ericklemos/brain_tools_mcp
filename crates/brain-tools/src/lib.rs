@@ -5,7 +5,7 @@
 //! below re-export it so existing callers and the integration tests keep
 //! compiling unchanged.
 
-pub use brain_kernel::{error, BrainError, Config, Result};
+pub use brain_kernel::{error, BrainError, Config, Result, ToolProfile};
 
 mod mcp_server;
 

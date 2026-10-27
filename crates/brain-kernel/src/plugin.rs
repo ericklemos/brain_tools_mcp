@@ -102,6 +102,18 @@ impl Registry {
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty()
     }
+
+    /// Restricts the exposed set to `allowed`, preserving registration order.
+    ///
+    /// Restricted tools are removed rather than hidden in `list_tools`: a
+    /// profile that still answers `tools/call` would not save the schema it was
+    /// meant to save, and a hidden tool is a tool the client did not negotiate.
+    pub fn retain(&mut self, allowed: &[&'static str]) {
+        let allowed: std::collections::HashSet<&'static str> =
+            allowed.iter().copied().collect();
+        self.order.retain(|name| allowed.contains(name));
+        self.plugins.retain(|name, _| allowed.contains(name));
+    }
 }
 
 impl ToolDispatcher for Registry {
@@ -159,6 +171,19 @@ mod tests {
     fn empty_registry_lists_no_tools() {
         let reg = Registry::new();
         assert!(reg.list_tools().is_empty());
+    }
+
+    #[test]
+    fn retain_keeps_only_the_allowed_tools_in_registration_order() {
+        let mut reg = Registry::new();
+        for name in ["a", "b", "c"] {
+            reg.register(Arc::new(FakePlugin(name))).unwrap();
+        }
+
+        reg.retain(&["c", "a"]);
+
+        let names: Vec<String> = reg.list_tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["a", "c"]);
     }
 
     #[test]

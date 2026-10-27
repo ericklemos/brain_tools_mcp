@@ -1,6 +1,48 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+/// Which tools a client sees. Every exposed tool costs schema tokens on every
+/// request, so a read-only or edit-only session should not pay for the rest.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolProfile {
+    Full,
+    Core,
+    Read,
+}
+
+impl ToolProfile {
+    /// `None` means "no filtering" (full). The lists keep registration order
+    /// because `Registry::retain` preserves it.
+    pub fn tools(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Full => None,
+            Self::Core => Some(&[
+                "brain_search",
+                "brain_context_graph",
+                "brain_impact_check",
+                "brain_peek",
+                "brain_exec",
+                "brain_read",
+                "brain_edit",
+                "brain_write",
+                "brain_patch",
+                "brain_map",
+            ]),
+            Self::Read => Some(&[
+                "brain_search",
+                "brain_context_graph",
+                "brain_impact_check",
+                "brain_peek",
+                "brain_read",
+                "brain_map",
+                "brain_assert",
+                "brain_diff",
+                "brain_why",
+            ]),
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "brain-tools",
@@ -11,6 +53,10 @@ pub struct Config {
     /// Root directory of the repository to index and search
     #[arg(short = 'r', long, env = "BRAIN_ROOT_DIR", default_value = ".")]
     pub root_dir: PathBuf,
+
+    /// Tool set exposed over MCP: full, core (edit loop) or read (review)
+    #[arg(long = "tools", env = "BRAIN_TOOLS", value_enum, default_value = "full")]
+    pub tool_profile: ToolProfile,
 
     /// Path to GGUF model file (e.g. models/vllm-d3-edge-Q8_0.gguf)
     #[arg(short = 'm', long, env = "BRAIN_MODEL_PATH")]

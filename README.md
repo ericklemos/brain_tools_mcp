@@ -12,13 +12,14 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
    - Varredura com `ignore` e `grep-searcher` respeitando `.gitignore` e ignorando `target/`, `build/`, `.gradle/`, `.git/`, `node_modules/`.
    - Expansão de nós sintáticos via **Tree-sitter** com suporte de primeira classe a **Rust** e **Kotlin**.
    - **Validação Local Inteligente:** Usa modelo GGUF **d3-edge** (`vllm-d3-edge-Q8_0.gguf`) com scoring binário de logits ($1$ forward pass) e reaproveitamento de KV-cache de prefixo na GPU via CUDA.
+   - **Divulgação progressiva:** por padrão manda o corpo completo dos primeiros resultados e só a assinatura do resto (`detail: "auto"`); `full` e `signatures` forçam um comportamento para toda a busca.
    - **Modo Fallback Automático:** Funciona perfeitamente mesmo sem modelo GGUF baixado, ranqueando blocos via densidade léxica/AST.
 
 2. **`brain_context_graph` (Ego-Grafo de Chamadas):**
    - Grafo direcionado em memória (`petgraph::stable_graph::StableDiGraph`).
    - Retorna apenas as assinaturas de quem chama e do que o símbolo consome a $k$ saltos de distância, sem poluir o contexto com corpos inteiros.
    - **Uma chamada é uma aresta.** A query de chamadas casa o mesmo nó por mais de um padrão (um carrega o `receiver`, outro o `call_path`); os padrões são fundidos pelo span do nome antes da resolução, então não há aresta repetida nem chamada contada duas vezes na confiança do grafo.
-   - Quando o alvo é um arquivo inteiro, as seções vazias viram **uma** linha de manchete (`N sem chamadas de entrada, M sem consumo externo`) em vez de se repetirem símbolo a símbolo.
+   - Quando o alvo é um arquivo inteiro ou um nome ambíguo, devolve um **digest** de uma linha por símbolo (`←fan-in →fan-out`), ordenado por centralidade, em vez de repetir o relatório de chamadas símbolo a símbolo. Para detalhe, basta passar o nome do símbolo.
 
 3. **`brain_impact_check` (Análise de Impacto Reverso):**
    - Percorre dependências reversas transitivas no grafo para apontar todos os pontos do repositório que quebram caso uma assinatura seja modificada.
@@ -97,6 +98,10 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
    - Um recorte (corpo truncado) nunca vira ponteiro nem diff: o corpo inteiro volta com o motivo escrito. `repeat: "allow"` força o corpo, e a terceira repetição seguida também.
    - Ligado por padrão; `--delivery-ledger false` reproduz o comportamento anterior. Desenho em [docs/superpowers/specs/2026-10-27-delivery-ledger-design.md](docs/superpowers/specs/2026-10-27-delivery-ledger-design.md).
 
+19. **`brain_trace` (Caminho de Chamadas):**
+   - Busca em largura no grafo e devolve o caminho mais curto de `from` até `to`, com o ponto de chamada de cada salto — em vez de um `context_graph` com depth alto e leitura manual dos chamadores.
+   - Sem caminho, a resposta é categórica e carrega a confiança do grafo: “não achei aresta” não vira “não há chamada”.
+
 ---
 
 ## 📦 Download do Modelo GGUF (`d3-edge`)
@@ -171,6 +176,7 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 | Flag | Padrão | Descrição |
 |---|---|---|
 | `--root-dir`, `-r` | `.` (cwd) | Diretório indexado e vigiado pelo watcher. **Relativo ao cwd do processo.** |
+| `--tools` | `full` | Conjunto exposto: `full` (16), `core` (10, ciclo de edição) ou `read` (9, revisão). Reduz o custo fixo do `tools/list`. |
 | `--model-path`, `-m` | — | Caminho do GGUF. Sem ele, opera em modo léxico/AST (fallback). |
 | `--gpu-layers` | `33` | Camadas offloaded para a GPU. |
 | `--default-min-confidence` | `0.65` | Limiar do modelo semântico. **Só se aplica com o GGUF carregado** — no modo léxico o score é ranking relativo e não há corte. |
@@ -189,8 +195,23 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 | `--threads`, `-t` | — | Threads de CPU para busca e inferência. |
 
 Todas aceitam variável de ambiente equivalente (`BRAIN_ROOT_DIR`, `BRAIN_GPU_LAYERS`,
-`BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `BRAIN_BUDGET_TOKENS`, `RUST_LOG`).
+`BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `BRAIN_BUDGET_TOKENS`, `BRAIN_TOOLS`, `RUST_LOG`).
 Rode `brain-tools --help` para a lista exata do binário instalado.
+
+### Perfis de ferramentas (`--tools`)
+
+O `tools/list` é pago a cada requisição em vários clientes. Expor 16 ferramentas custa
+**3.278 tokens**; um perfil corta isso sem esconder capacidades que a sessão não usa:
+
+| Perfil | Ferramentas | Schema |
+|---|---|---|
+| `full` (padrão) | todas as 16 | 3.278 tokens |
+| `core` | search, context_graph, impact_check, peek, exec, read, edit, write, patch, map | **2.142** (−35%) |
+| `read` | search, context_graph, impact_check, peek, read, map, assert, diff, why | **1.735** (−47%) |
+
+Ferramenta fora do perfil responde `Unknown tool` em vez de ficar oculta: um perfil que
+ainda executa o que não lista não economiza o schema que prometeu. `brain_peek` está em
+todos os perfis — truncamento sem recuperação não é economia, é perda.
 
 > ⚠️ **`--exec-timeout-secs` não é o timeout do MCP.** Ele limita só o processo filho do
 > `brain_exec` (300 s por padrão). O tempo que o **cliente** espera por uma resposta MCP
@@ -399,7 +420,7 @@ claude mcp list
 
 Devem aparecer `brain_search`, `brain_context_graph`, `brain_impact_check`, `brain_peek`,
 `brain_exec`, `brain_shell`, `brain_read`, `brain_edit`, `brain_write`, `brain_patch`,
-`brain_map`, `brain_assert`, `brain_diff`, `brain_why` e `brain_ledger` (`brain_exec` só
+`brain_map`, `brain_assert`, `brain_diff`, `brain_why`, `brain_ledger` e `brain_trace` (`brain_exec` só
 não aparece com `--exec-disabled`; `brain_shell` com `--shell-disabled`). Se faltar alguma, o
 binário é antigo.
 

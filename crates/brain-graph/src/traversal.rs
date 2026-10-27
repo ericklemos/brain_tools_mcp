@@ -60,11 +60,11 @@ impl GraphTraversal {
         };
 
         // A file (or a name with several definitions) is a digest: repeating
-        // "nenhuma chamada" per symbol costs more than the file it describes.
-        // The absence is counted once in a headline instead of dropped.
-        let digest = matching_nodes.len() > 1;
-        let mut without_incoming = 0usize;
-        let mut without_outgoing = 0usize;
+        // the full incoming/outgoing report per symbol costs more than the file
+        // it describes. The agent refines with a symbol when it needs detail.
+        if matching_nodes.len() > 1 {
+            return Self::digest_sections(graph, target, &matching_nodes, root_dir);
+        }
 
         let mut sections = Vec::new();
 
@@ -113,11 +113,7 @@ impl GraphTraversal {
                 }
             }
             if incoming.is_empty() {
-                if digest {
-                    without_incoming += 1;
-                } else {
-                    incoming.push_str("- (Nenhuma chamada de entrada detectada no grafo)\n");
-                }
+                incoming.push_str("- (Nenhuma chamada de entrada detectada no grafo)\n");
             }
             if !incoming.is_empty() {
                 sections.push(Section {
@@ -144,11 +140,7 @@ impl GraphTraversal {
                 }
             }
             if outgoing.is_empty() {
-                if digest {
-                    without_outgoing += 1;
-                } else {
-                    outgoing.push_str("- (Nenhuma chamada externa consumida detectada)\n");
-                }
+                outgoing.push_str("- (Nenhuma chamada externa consumida detectada)\n");
             }
             if !outgoing.is_empty() {
                 sections.push(Section {
@@ -159,19 +151,99 @@ impl GraphTraversal {
             }
         }
 
-        if digest && (without_incoming > 0 || without_outgoing > 0) {
-            sections.insert(
-                0,
-                Section {
-                    heading: format!(
-                        "### {} símbolos — {without_incoming} sem chamadas de entrada, {without_outgoing} sem consumo externo",
-                        matching_nodes.len()
-                    ),
-                    body: "> Seções vazias omitidas; a contagem acima é a declaração da ausência.\n"
-                        .to_string(),
-                    priority: 255,
-                },
-            );
+        sections
+    }
+
+    /// One line per symbol for a file or an ambiguous name: fan-in/fan-out is
+    /// what tells the agent where to look next, and a full caller list per
+    /// symbol would cost more than reading the file.
+    fn digest_sections(
+        graph: &ProjectCodeGraph,
+        target: &str,
+        nodes: &[petgraph::stable_graph::NodeIndex],
+        root_dir: &Path,
+    ) -> Vec<Section> {
+        struct Row {
+            path: String,
+            start: usize,
+            end: usize,
+            signature: String,
+            name: String,
+            incoming: usize,
+            outgoing: usize,
+        }
+
+        let mut rows = Vec::with_capacity(nodes.len());
+        for &idx in nodes {
+            let Some(node) = graph.graph.node_weight(idx) else {
+                continue;
+            };
+            rows.push(Row {
+                path: node
+                    .file_path
+                    .strip_prefix(root_dir)
+                    .unwrap_or(&node.file_path)
+                    .display()
+                    .to_string(),
+                start: node.start_line,
+                end: node.end_line,
+                signature: node.signature.clone(),
+                name: node.name.clone(),
+                incoming: graph.graph.edges_directed(idx, Direction::Incoming).count(),
+                outgoing: graph.graph.edges_directed(idx, Direction::Outgoing).count(),
+            });
+        }
+
+        if rows.is_empty() {
+            return Vec::new();
+        }
+
+        let with_incoming = rows.iter().filter(|row| row.incoming > 0).count();
+        let with_outgoing = rows.iter().filter(|row| row.outgoing > 0).count();
+
+        // Most central first: the agent reads the digest top-down until its
+        // question is answered.
+        rows.sort_by(|a, b| {
+            b.incoming
+                .cmp(&a.incoming)
+                .then_with(|| b.outgoing.cmp(&a.outgoing))
+                .then_with(|| a.path.cmp(&b.path))
+                .then_with(|| a.start.cmp(&b.start))
+        });
+
+        let subject = {
+            let first = &rows[0].path;
+            if rows.iter().all(|row| &row.path == first) {
+                first.clone()
+            } else {
+                target.to_string()
+            }
+        };
+
+        let mut sections = vec![Section {
+            heading: format!("### `{subject}` — {} símbolos", rows.len()),
+            body: format!(
+                "> {with_incoming} com chamadas de entrada, {with_outgoing} com consumo externo. Para ver os chamadores de um símbolo, passe o nome em `target_symbol_or_file`.\n"
+            ),
+            priority: 255,
+        }];
+
+        for row in &rows {
+            let signature = compact_signature(&row.signature);
+            let label = if signature.is_empty() {
+                row.name.clone()
+            } else {
+                signature
+            };
+            sections.push(Section {
+                heading: format!(
+                    "- `{}:{}-{}` `{}` ←{} →{}",
+                    row.path, row.start, row.end, label, row.incoming, row.outgoing
+                ),
+                body: String::new(),
+                // Centrality decides what survives a tight budget.
+                priority: (150 + row.incoming.min(100)) as u8,
+            });
         }
 
         sections
@@ -406,7 +478,7 @@ mod budget_tests {
     }
 
     #[test]
-    fn a_file_target_declares_the_empty_sections_once_instead_of_per_symbol() {
+    fn a_file_target_becomes_a_digest_instead_of_repeating_sections() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("a.rs"),
@@ -419,29 +491,41 @@ mod budget_tests {
         let headline = &sections[0];
         assert_eq!(headline.priority, 255);
         assert!(
-            headline.heading.contains("2 sem chamadas de entrada"),
+            headline.heading.contains("3 símbolos"),
             "{:?}",
             headline.heading
         );
-        assert_eq!(
-            sections
-                .iter()
-                .filter(|s| s.heading.contains("Incoming"))
-                .count(),
-            1,
-            "only `f` has a caller"
+        assert!(
+            headline.body.contains("1 com chamadas de entrada"),
+            "{:?}",
+            headline.body
+        );
+        assert!(
+            headline.body.contains("1 com consumo externo"),
+            "{:?}",
+            headline.body
         );
         assert_eq!(
+            sections.len(),
+            4,
+            "one header plus one line per symbol, not per-section reports"
+        );
+        assert!(
             sections
                 .iter()
-                .filter(|s| s.heading.contains("Outgoing"))
-                .count(),
-            1,
-            "only `g` consumes something"
+                .any(|s| s.heading.contains("pub fn f()") && s.heading.contains("←1 →0")),
+            "fan-in/fan-out must be on the symbol line: {:?}",
+            sections.iter().map(|s| &s.heading).collect::<Vec<_>>()
+        );
+        assert!(
+            !sections
+                .iter()
+                .any(|s| s.heading.contains("Incoming") || s.heading.contains("Outgoing")),
+            "a digest does not repeat caller sections per symbol"
         );
         assert!(
             !sections.iter().any(|s| s.body.contains("Nenhuma chamada")),
-            "the absence is counted in the headline, not repeated per symbol"
+            "the absence is counted in the header, not repeated per symbol"
         );
     }
 

@@ -27,7 +27,24 @@ pub struct BrainSearchParams {
     pub budget_tokens: Option<usize>,
     /// `"allow"` asks for bodies even if this session already received them.
     pub repeat: Option<String>,
+    /// `auto` sends the body of the first results and signatures for the rest;
+    /// `full` and `signatures` force one behaviour for every result.
+    pub detail: Option<SearchDetail>,
 }
+
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchDetail {
+    #[default]
+    Auto,
+    Full,
+    Signatures,
+}
+
+/// How many full bodies `detail: auto` may send before switching to
+/// signatures. Two covers "top hit plus its neighbour" without paying for a
+/// whole result set the agent has not chosen yet.
+const MAX_FULL_BODIES_IN_AUTO: usize = 2;
 
 pub struct SearchHandler {
     root_dir: PathBuf,
@@ -111,6 +128,8 @@ impl SearchHandler {
 
         let max_results = params.max_results.unwrap_or(self.default_max_results);
         let min_confidence = params.min_confidence.unwrap_or(self.default_min_confidence);
+        let detail = params.detail.unwrap_or_default();
+        let budget_tokens = params.budget_tokens.unwrap_or(self.default_budget_tokens);
 
         let keyword_strs: Vec<&str> = params.keywords.iter().map(|s| s.as_str()).collect();
 
@@ -205,6 +224,9 @@ impl SearchHandler {
         let mut rendered: Vec<Rendered> = Vec::with_capacity(scored.len() + 1);
         // One read per file, however many snippets it contributed.
         let mut contents: HashMap<PathBuf, String> = HashMap::new();
+        let mut full_bodies = 0usize;
+        let mut full_tokens = 0usize;
+        let mut signature_only = 0usize;
 
         for (idx, item) in scored.iter().enumerate() {
             let snippet = &item.snippet;
@@ -228,6 +250,38 @@ impl SearchHandler {
                 snippet.start_line,
                 snippet.end_line,
             );
+
+            let code_tokens = budget::estimate_tokens(&snippet.code);
+            let wants_full = match detail {
+                SearchDetail::Full => true,
+                SearchDetail::Signatures => false,
+                SearchDetail::Auto => {
+                    full_bodies < MAX_FULL_BODIES_IN_AUTO
+                        && (full_bodies == 0
+                            || full_tokens + code_tokens <= budget_tokens * 2 / 3)
+                }
+            };
+
+            if !wants_full {
+                signature_only += 1;
+                let mut body = String::new();
+                let signature = compact_signature(&snippet.signature);
+                if !signature.is_empty() {
+                    body.push_str(&format!("`{signature}`\n\n"));
+                }
+                rendered.push(Rendered {
+                    section: Section {
+                        heading,
+                        body,
+                        priority: (item.score * 200.0) as u8,
+                    },
+                    pending: None,
+                });
+                continue;
+            }
+
+            full_bodies += 1;
+            full_tokens += code_tokens + budget::estimate_tokens(&heading);
 
             let mut body = String::new();
             let signature = snippet.signature.trim();
@@ -261,11 +315,19 @@ impl SearchHandler {
             .map(|rendered| rendered.section.clone())
             .collect();
 
+        let signature_note = if signature_only > 0 {
+            format!(
+                "> {signature_only} resultado(s) só com assinatura — use `brain_read` para o corpo.\n\n"
+            )
+        } else {
+            String::new()
+        };
+
         if self.store.is_none() {
             // No store configured: render everything, as before this contract.
             let mut out = format!(
-                "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n",
-                completeness
+                "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n{}",
+                completeness, signature_note
             );
             for section in &sections {
                 out.push_str(&section.heading);
@@ -275,7 +337,6 @@ impl SearchHandler {
             return CallToolResult::text(out);
         }
 
-        let budget_tokens = params.budget_tokens.unwrap_or(self.default_budget_tokens);
         let selection = budget::select(&sections, budget_tokens);
         let handle = if selection.omitted.is_empty() {
             None
@@ -291,8 +352,8 @@ impl SearchHandler {
         self.settle(&rendered, &selection);
 
         let mut out = format!(
-            "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n",
-            completeness
+            "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n{}",
+            completeness, signature_note
         );
         out.push_str(&budget::render(&selection, handle.as_deref()));
         CallToolResult::text(out)
@@ -536,6 +597,66 @@ async fn search_honours_budget_and_leaves_the_rest_in_the_store() {
         .and_then(|s| s.split('`').next())
         .expect("handle in envelope");
     assert!(store.get(handle).is_some(), "handle must resolve in the store");
+}
+
+#[tokio::test]
+async fn automatic_detail_switches_to_signatures_after_two_bodies() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    for name in ["handler_a", "handler_b", "handler_c"] {
+        fs::write(
+            root.join(format!("{name}.rs")),
+            format!("pub fn {name}() -> u8 {{\n    1\n}}\n"),
+        )
+        .unwrap();
+    }
+
+    let validator = ValidationClient::new(None, 0);
+    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+    let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
+
+    let search = |args: serde_json::Value| {
+        let handler = &handler;
+        async move {
+            handler
+                .handle_brain_search(args)
+                .await
+                .content[0]
+                .text
+                .clone()
+        }
+    };
+
+    let auto = search(serde_json::json!({
+        "natural_query": "handler",
+        "keywords": ["handler"]
+    }))
+    .await;
+    assert_eq!(auto.matches("```rust").count(), 2, "{auto}");
+    assert!(auto.contains("1 resultado(s) só com assinatura"), "{auto}");
+    assert!(auto.contains("pub fn handler_"), "signatures remain: {auto}");
+
+    let signatures = search(serde_json::json!({
+        "natural_query": "handler",
+        "keywords": ["handler"],
+        "detail": "signatures"
+    }))
+    .await;
+    assert!(!signatures.contains("```rust"), "{signatures}");
+    assert!(
+        signatures.contains("3 resultado(s) só com assinatura"),
+        "{signatures}"
+    );
+
+    let full = search(serde_json::json!({
+        "natural_query": "handler",
+        "keywords": ["handler"],
+        "detail": "full",
+        "repeat": "allow"
+    }))
+    .await;
+    assert_eq!(full.matches("```rust").count(), 3, "{full}");
+    assert!(!full.contains("só com assinatura"), "{full}");
 }
 
 #[tokio::test]
