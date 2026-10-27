@@ -3,7 +3,7 @@ use brain_kernel::protocol::Tool;
 pub fn brain_exec_tool() -> Tool {
     Tool {
         name: "brain_exec".to_string(),
-        description: "FONTE DE VERDADE sobre o estado de compilação e testes deste projeto. Roda build/check/test/clippy e devolve um relatório agrupado (erros por código e arquivo, falhas com o assert intacto, warnings resumidos) em vez do log cru. Não invente o resultado a partir de leitura de código: peça aqui. Se a execução anterior não mudou nada, responde do cache.".to_string(),
+        description: "FONTE DE VERDADE do build/testes. Roda build/check/test/clippy e devolve erros agrupados, falhas com assert intacto e cache; não deduza o resultado lendo código.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -14,7 +14,7 @@ pub fn brain_exec_tool() -> Tool {
                 },
                 "budget_tokens": {
                     "type": "integer",
-                    "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
+                    "description": "Teto de tokens (excedente em brain_peek)."
                 },
                 "refresh": {
                     "type": "boolean",

@@ -545,7 +545,7 @@ impl ToolPlugin for EditTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_edit".to_string(),
-            description: "Edita o corpo de um símbolo existente pelo nome, por span de AST, sobre a versão do arquivo identificada por `expected_hash`. Substitui `Read` + `Edit`: o agente manda o corpo novo, não uma âncora de texto. Recusa hash divergente, símbolo ambíguo, item sem corpo e sintaxe inválida; nunca escreve parcialmente nem formata.".to_string(),
+            description: "Edita o corpo de um símbolo por span de AST, com `expected_hash` do `brain_read`. Substitui Read+Edit; recusa hash divergente, símbolo ambíguo ou sintaxe inválida.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -571,7 +571,7 @@ impl ToolPlugin for EditTool {
                     },
                     "budget_tokens": {
                         "type": "integer",
-                        "description": "Teto aproximado de tokens; o excedente fica recuperável via brain_peek."
+                        "description": "Teto de tokens (excedente em brain_peek)."
                     }
                 },
                 "required": ["path", "symbol", "expected_hash", "new_body"]

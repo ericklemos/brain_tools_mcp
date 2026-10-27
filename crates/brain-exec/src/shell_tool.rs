@@ -160,7 +160,7 @@ impl ToolPlugin for ShellTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_shell".to_string(),
-            description: "Executa um comando de shell dentro do diretório raiz e devolve stdout, stderr e o código de saída. Substitui `shell` para git, formatação e ferramentas que o enum do `brain_exec` não cobre. Não é um sandbox: rode com `--shell-disabled` se precisar de garantia de somente leitura.".to_string(),
+            description: "Executa comando em `bash -lc` no root e devolve stdout/stderr/código. Substitui `shell` para git e formatadores; não é sandbox.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -174,7 +174,7 @@ impl ToolPlugin for ShellTool {
                     },
                     "budget_tokens": {
                         "type": "integer",
-                        "description": "Teto aproximado de tokens; o excedente fica recuperável via brain_peek."
+                        "description": "Teto de tokens (excedente em brain_peek)."
                     }
                 },
                 "required": ["command"]

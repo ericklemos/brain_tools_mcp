@@ -27,7 +27,13 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::parse();
+    let mut config = Config::parse();
+    // Canonicalize once: tools canonicalize the paths they read, so a relative
+    // `--root-dir` (the default `.`) makes `strip_prefix` fail and headings pay
+    // for an absolute path on every line.
+    if let Ok(root) = config.root_dir.canonicalize() {
+        config.root_dir = root;
+    }
 
     // Direct all tracing/logging strictly to stderr
     tracing_subscriber::registry()

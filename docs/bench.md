@@ -58,20 +58,21 @@ Saída típica:
 
 ```
 tarefa                       brain     naïve    fator    tempo  resultado
-busca-orcamento              1.947     7.251     3,7x    16,2s  ok
-fluxo-busca-corpo            2.029    12.725     6,3x    16,6s  ok
-contexto-handle-diff           543     9.834    18,1x     0,0s  ok
-contexto-arquivo-inteiro     2.053     1.536     0,7x     0,0s  ok
-impacto-select               2.061    27.820    13,5x     0,0s  ok
-esqueleto-watcher              155       686     4,4x     0,0s  ok
+busca-orcamento              1.844     7.397     4,0x    16,0s  ok
+fluxo-busca-corpo            1.956    12.927     6,6x    16,6s  ok
+contexto-handle-diff           488     9.825    20,1x     0,0s  ok
+contexto-arquivo-inteiro     1.969     1.536     0,8x     0,0s  ok
+impacto-select               2.053    28.208    13,7x     0,0s  ok
+esqueleto-watcher              103       686     6,7x     0,0s  ok
+esqueleto-arquivo-grande     1.169     9.385     8,0x     0,0s  ok
 corpo-select                   309     2.388     7,7x     0,0s  ok
-mapa-grafo                   2.020    71.648    35,5x     0,0s  ok
-assert-omitted-body            177     9.780    55,3x     0,0s  ok
+mapa-grafo                   2.036    71.909    35,3x     0,0s  ok
+assert-omitted-body            177     9.836    55,6x     0,0s  ok
 porque-build-graph             114     7.475    65,6x     0,0s  ok
 repeticao-mesmo-trecho         577     9.385    16,3x     0,0s  ok
-TOTAL                       11.985   160.528    13,4x    32,8s
+TOTAL                       12.795   170.957    13,4x    32,5s
 
-schema tools/list: 3.529 tokens em 15 ferramentas (pago a cada requisição, fora das tarefas)
+schema tools/list: 3.034 tokens em 15 ferramentas (pago a cada requisição, fora das tarefas)
 economia: 92,5% dos tokens que reler os arquivos declarados custaria
 ```
 
@@ -165,7 +166,7 @@ Regra prática ao ler um número que não muda: se `brain` está colado no budge
 (`2.000` + envelope), a ferramenta está truncando. Aí o ganho tem que aparecer
 em outra tarefa, ou o desenho da chamada precisa mudar — não a formatação.
 
-`repeticao-mesmo-trecho` mede o ledger de entrega: a primeira leitura custa 479
-tokens, a segunda (o ponteiro com handle) 98 — 20,5% da primeira, e o valor
+`repeticao-mesmo-trecho` mede o ledger de entrega: a primeira leitura custa 450
+tokens, a segunda (o ponteiro com handle) 69 — 15,3% da primeira, e o valor
 absoluto do ponteiro não cresce com o tamanho do símbolo. Para um corpo de 200
-linhas a mesma segunda chamada custaria os mesmos ~98 tokens.
+linhas a mesma segunda chamada custaria os mesmos ~69 tokens.

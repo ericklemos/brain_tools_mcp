@@ -12,6 +12,7 @@ use crate::scanner::LexicalScanner;
 use brain_kernel::budget::{self, Section};
 use brain_kernel::deliveries::{self, Delivery, DeliveryLedger, Verdict};
 use brain_kernel::store::ResponseStore;
+use brain_kernel::text::compact_signature;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -229,8 +230,11 @@ impl SearchHandler {
             );
 
             let mut body = String::new();
-            if !snippet.signature.is_empty() {
-                body.push_str(&format!("**Assinatura:** `{}`\n\n", snippet.signature));
+            let signature = snippet.signature.trim();
+            // The signature is the opening of the code block; repeating it
+            // above the body pays twice for the same text.
+            if !signature.is_empty() && !snippet.code.trim_start().starts_with(signature) {
+                body.push_str(&format!("`{}`\n\n", compact_signature(signature)));
             }
             body.push_str(&format!("```{}\n{}\n```\n\n", lang, snippet.code));
 
@@ -260,8 +264,8 @@ impl SearchHandler {
         if self.store.is_none() {
             // No store configured: render everything, as before this contract.
             let mut out = format!(
-                "### Resultados da Busca (`{}`)\n{}\n\n> Trecho verbatim do arquivo, corpo completo do símbolo.\n\n",
-                params.natural_query, completeness
+                "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n",
+                completeness
             );
             for section in &sections {
                 out.push_str(&section.heading);
@@ -287,8 +291,8 @@ impl SearchHandler {
         self.settle(&rendered, &selection);
 
         let mut out = format!(
-            "### Resultados da Busca (`{}`)\n{}\n\n> Trecho verbatim do arquivo, corpo completo do símbolo.\n\n",
-            params.natural_query, completeness
+            "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n",
+            completeness
         );
         out.push_str(&budget::render(&selection, handle.as_deref()));
         CallToolResult::text(out)
@@ -562,6 +566,13 @@ async fn response_declares_completeness_and_carries_no_fake_confidence() {
     // The completeness claim is what licenses the agent to stop verifying.
     assert!(text.contains("candidatas casaram com a query"), "{text}");
     assert!(text.contains("Trecho verbatim"), "{text}");
+    // The signature is the opening of the code block; it must not be printed twice.
+    assert_eq!(
+        text.matches("pub fn verify_jwt_token").count(),
+        1,
+        "signature duplicated above the body: {text}"
+    );
+    assert!(!text.contains("Assinatura"), "{text}");
     // The number is a relative rank, not a probability: it must not read as one.
     assert!(!text.contains("Confiança:"), "relative rank leaked as confidence: {text}");
 }

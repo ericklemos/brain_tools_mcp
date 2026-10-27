@@ -43,7 +43,7 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
    - O envelope de truncamento anuncia quantas seções ficaram de fora — a resposta nunca "parece completa" sem ser.
 
 7. **`brain_read` (Leitura Cirúrgica):**
-   - Sem `symbol`: devolve o esqueleto do arquivo (uma seção por símbolo, só assinatura). Com `symbol`: devolve só o corpo daquele símbolo, com a linguagem certa no fence.
+   - Sem `symbol`: devolve o esqueleto do arquivo (uma linha por símbolo, só assinatura, com o caminho uma vez no cabeçalho). Com `symbol`: devolve só o corpo daquele símbolo, com a linguagem certa no fence.
    - Resolve o caminho contra `--root-dir` e recusa traversal (`../../etc/passwd`) em vez de ler a máquina.
 
 8. **`brain_edit` (Edição Cirúrgica por Span):**

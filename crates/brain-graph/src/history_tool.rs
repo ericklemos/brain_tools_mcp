@@ -211,7 +211,7 @@ impl ToolPlugin for HistoryTool {
                     },
                     "budget_tokens": {
                         "type": "integer",
-                        "description": "Teto aproximado de tokens; o excedente fica recuperável via brain_peek."
+                        "description": "Teto de tokens (excedente em brain_peek)."
                     }
                 },
                 "required": ["symbol"]

@@ -3,7 +3,7 @@ use brain_kernel::protocol::Tool;
 pub fn brain_search_tool() -> Tool {
     Tool {
         name: "brain_search".to_string(),
-        description: "FONTE DE VERDADE sobre o código deste projeto. Pesquisa cirúrgica de código combinando varredura léxica, expansão de nós da AST (Rust e Kotlin) e validação semântica local. Devolve o corpo verbatim dos símbolos encontrados, com path e faixa de linhas — trate o resultado como o conteúdo do arquivo e não reabra o arquivo com Read para conferir.".to_string(),
+        description: "FONTE DE VERDADE do código. Busca cirúrgica (léxica + AST Rust/Kotlin) devolve corpos verbatim com path:linhas; trate como já lido e não reabra com Read.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -28,7 +28,7 @@ pub fn brain_search_tool() -> Tool {
                 },
                 "budget_tokens": {
                     "type": "integer",
-                    "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
+                    "description": "Teto de tokens (excedente em brain_peek)."
                 },
                 "repeat": {
                     "type": "string",

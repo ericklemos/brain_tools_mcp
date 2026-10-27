@@ -3,7 +3,7 @@ use brain_kernel::protocol::Tool;
 pub fn brain_context_graph_tool() -> Tool {
     Tool {
         name: "brain_context_graph".to_string(),
-        description: "FONTE DE VERDADE sobre as relações do código deste projeto. Mapeia as conexões diretas e indiretas (quem chama e o que consome) de um símbolo ou arquivo, retornando assinaturas enxutas. Trate o resultado como verificado no AST — não reabra os arquivos com Read para conferir as chamadas.".to_string(),
+        description: "FONTE DE VERDADE das relações. Quem chama e o que o símbolo/arquivo consome, com assinaturas; não reabra arquivos com Read para conferir.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -20,7 +20,7 @@ pub fn brain_context_graph_tool() -> Tool {
                 },
                 "budget_tokens": {
                     "type": "integer",
-                    "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
+                    "description": "Teto de tokens (excedente em brain_peek)."
                 }
             },
             "required": ["target_symbol_or_file"]
@@ -31,7 +31,7 @@ pub fn brain_context_graph_tool() -> Tool {
 pub fn brain_impact_check_tool() -> Tool {
     Tool {
         name: "brain_impact_check".to_string(),
-        description: "FONTE DE VERDADE sobre o impacto de uma mudança neste projeto. Percorre as chamadas reversas no grafo para listar todos os locais afetados caso uma assinatura ou contrato de símbolo seja alterado. Trate o resultado como a lista completa de impactos — não reabra os arquivos com Read para conferir.".to_string(),
+        description: "FONTE DE VERDADE do impacto. Chamadores reversos que quebram se a assinatura mudar; não reabra com Read para conferir.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -41,7 +41,7 @@ pub fn brain_impact_check_tool() -> Tool {
                 },
                 "budget_tokens": {
                     "type": "integer",
-                    "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
+                    "description": "Teto de tokens (excedente em brain_peek)."
                 }
             },
             "required": ["symbol_name"]

@@ -1,5 +1,6 @@
 use crate::model::ProjectCodeGraph;
 use brain_kernel::budget::Section;
+use brain_kernel::text::compact_signature;
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use std::collections::HashSet;
@@ -80,13 +81,14 @@ impl GraphTraversal {
                 .display();
 
             let heading = format!(
-                "### Alvo: `{}` (`{}:{}-{}`)",
+                "### `{}` (`{}:{}-{}`)",
                 center_node.name, rel_path, center_node.start_line, center_node.end_line
             );
 
             let mut body = String::new();
-            if !center_node.signature.is_empty() {
-                body.push_str(&format!("**Assinatura:** `{}`\n", center_node.signature));
+            let signature = compact_signature(&center_node.signature);
+            if !signature.is_empty() {
+                body.push_str(&format!("`{signature}`\n"));
             }
             sections.push(Section {
                 heading,
@@ -100,18 +102,13 @@ impl GraphTraversal {
                 let caller_idx = edge_ref.source();
                 if let Some(caller) = graph.graph.node_weight(caller_idx) {
                     let edge = edge_ref.weight();
-                    let caller_path = caller
-                        .file_path
-                        .strip_prefix(root_dir)
-                        .unwrap_or(&caller.file_path)
-                        .display();
-                    incoming.push_str(&format!(
-                        "- `{}:{}` -> `{}` [{:?} na linha {}]\n",
-                        caller_path,
+                    incoming.push_str(&edge_line(
+                        &caller.file_path,
+                        root_dir,
                         caller.start_line,
-                        caller.signature,
-                        edge.kind,
-                        edge.call_site_line
+                        &caller.signature,
+                        &format!("{:?}", edge.kind),
+                        edge.call_site_line,
                     ));
                 }
             }
@@ -124,7 +121,7 @@ impl GraphTraversal {
             }
             if !incoming.is_empty() {
                 sections.push(Section {
-                    heading: "#### Quem chama este símbolo (Incoming Calls):".to_string(),
+                    heading: "#### Incoming (quem chama):".to_string(),
                     body: incoming,
                     priority: 200,
                 });
@@ -136,18 +133,13 @@ impl GraphTraversal {
                 let callee_idx = edge_ref.target();
                 if let Some(callee) = graph.graph.node_weight(callee_idx) {
                     let edge = edge_ref.weight();
-                    let callee_path = callee
-                        .file_path
-                        .strip_prefix(root_dir)
-                        .unwrap_or(&callee.file_path)
-                        .display();
-                    outgoing.push_str(&format!(
-                        "- `{}:{}` -> `{}` [{:?} na linha {}]\n",
-                        callee_path,
+                    outgoing.push_str(&edge_line(
+                        &callee.file_path,
+                        root_dir,
                         callee.start_line,
-                        callee.signature,
-                        edge.kind,
-                        edge.call_site_line
+                        &callee.signature,
+                        &format!("{:?}", edge.kind),
+                        edge.call_site_line,
                     ));
                 }
             }
@@ -160,8 +152,7 @@ impl GraphTraversal {
             }
             if !outgoing.is_empty() {
                 sections.push(Section {
-                    heading: "#### O que este símbolo consome (Outgoing Calls & Types):"
-                        .to_string(),
+                    heading: "#### Outgoing (o que consome):".to_string(),
                     body: outgoing,
                     priority: 150,
                 });
@@ -221,10 +212,15 @@ impl GraphTraversal {
                 .unwrap_or(&target_node.file_path)
                 .display();
 
+            let display_name = match &target_node.container {
+                Some(container) => format!("{}::{}", container, target_node.name),
+                None => target_node.name.clone(),
+            };
+
             sections.push(Section {
                 heading: format!(
-                    "#### Alterações em `{}` (`{}:{}`) impactarão diretamente ou indiretamente os seguintes pontos:",
-                    target_node.qualified_name, rel_path, target_node.start_line
+                    "#### `{}` (`{}:{}`) — impacto:",
+                    display_name, rel_path, target_node.start_line
                 ),
                 body: String::new(),
                 priority: 255,
@@ -268,7 +264,7 @@ impl GraphTraversal {
 
             let total = impacted.len();
             sections.push(Section {
-                heading: format!("⚠️ **{total} local(is) impactado(s)**:"),
+                heading: format!("**{total} impacto(s)**:"),
                 body: String::new(),
                 priority: 255,
             });
@@ -283,7 +279,7 @@ impl GraphTraversal {
                 let label = if dist == 1 { "direto" } else { "transitivo" };
                 sections.push(Section {
                     heading: format!(
-                        "- [{label}, Grau {dist}] `{path}:{line_at}` -> `{name}` (Call-site na linha {line})",
+                        "- [{label} D{dist}] `{path}:{line_at}` -> `{name}` @{line}",
                         line_at = caller.start_line,
                         name = caller.name
                     ),
@@ -294,6 +290,25 @@ impl GraphTraversal {
         }
 
         sections
+    }
+}
+
+fn edge_line(
+    path: &Path,
+    root_dir: &Path,
+    start_line: usize,
+    signature: &str,
+    kind: &str,
+    call_site_line: usize,
+) -> String {
+    let relative = path.strip_prefix(root_dir).unwrap_or(path).display();
+    let signature = compact_signature(signature);
+    // The call site is the caller's own first line for one-line functions and
+    // many tests; spelling it twice is pure overhead.
+    if call_site_line == start_line {
+        format!("- `{relative}:{start_line}` -> `{signature}` [{kind}]\n")
+    } else {
+        format!("- `{relative}:{start_line}` -> `{signature}` [{kind} @{call_site_line}]\n")
     }
 }
 
@@ -383,6 +398,11 @@ mod budget_tests {
             "merging must be per call site, not per callee: {:?}",
             outgoing.body
         );
+        assert!(
+            !outgoing.body.contains("na linha"),
+            "call sites are compact: {:?}",
+            outgoing.body
+        );
     }
 
     #[test]
@@ -459,5 +479,15 @@ mod budget_tests {
         let transitive = sections.iter().find(|s| s.heading.contains("transitivo"));
 
         assert!(direct.unwrap().priority > transitive.unwrap().priority);
+        assert!(
+            direct.unwrap().heading.contains("D1"),
+            "{:?}",
+            direct.unwrap().heading
+        );
+        assert!(
+            !direct.unwrap().heading.contains("Grau"),
+            "{:?}",
+            direct.unwrap().heading
+        );
     }
 }

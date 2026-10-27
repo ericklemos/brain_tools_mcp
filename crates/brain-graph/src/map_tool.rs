@@ -2,6 +2,7 @@ use brain_kernel::budget::{self, Section};
 use brain_kernel::plugin::ToolPlugin;
 use brain_kernel::protocol::{CallToolResult, Tool};
 use brain_kernel::store::ResponseStore;
+use brain_kernel::text::compact_signature;
 use petgraph::Direction;
 use serde::Deserialize;
 use std::future::Future;
@@ -132,9 +133,14 @@ impl MapTool {
             symbols.sort_by(|a, b| a.0.cmp(b.0));
 
             let mut body = String::new();
-            for (name, signature) in symbols.iter().take(MAX_SYMBOLS_PER_FILE) {
+            for &(name, signature) in symbols.iter().take(MAX_SYMBOLS_PER_FILE) {
+                let signature = compact_signature(signature);
                 if signature.is_empty() {
                     body.push_str(&format!("- `{name}`\n"));
+                } else if signature.contains(name) {
+                    // The signature already names the symbol (`pub fn foo(...)`),
+                    // so prefixing it with the name pays twice for the same word.
+                    body.push_str(&format!("- `{signature}`\n"));
                 } else {
                     body.push_str(&format!("- `{name}` — `{signature}`\n"));
                 }
@@ -180,7 +186,7 @@ impl ToolPlugin for MapTool {
                     },
                     "budget_tokens": {
                         "type": "integer",
-                        "description": "Teto aproximado de tokens; o excedente fica recuperável via brain_peek."
+                        "description": "Teto de tokens (excedente em brain_peek)."
                     }
                 }
             }),
@@ -251,6 +257,10 @@ mod tests {
         let alpha = text.find("feature_a.rs").expect("alpha must be listed");
         assert!(core < alpha, "core.rs should lead the map: {text}");
         assert!(text.contains("pub fn core_fn"), "signatures are the point: {text}");
+        assert!(
+            !text.contains("`core_fn` — `pub fn core_fn"),
+            "the signature already names the symbol: {text}"
+        );
         assert!(text.contains("0 chamadas recebidas") || text.contains("chamadas recebidas"));
     }
 

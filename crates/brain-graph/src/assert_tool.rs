@@ -284,7 +284,7 @@ impl ToolPlugin for AssertTool {
                     },
                     "budget_tokens": {
                         "type": "integer",
-                        "description": "Teto aproximado de tokens; a resposta é uma linha categórica."
+                        "description": "Teto de tokens; a resposta é uma linha categórica."
                     }
                 },
                 "required": ["kind", "symbol"]

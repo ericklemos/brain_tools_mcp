@@ -122,6 +122,21 @@
       ]
     },
     {
+      "id": "esqueleto-arquivo-grande",
+      "question": "Qual é a forma de scope.rs inteiro, sem abrir os corpos das funções?",
+      "naive": [
+        "crates/brain-graph/src/scope.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_read",
+          "arguments": {
+            "path": "crates/brain-graph/src/scope.rs"
+          }
+        }
+      ]
+    },
+    {
       "id": "corpo-select",
       "question": "Como funciona o corpo de budget::select?",
       "naive": [

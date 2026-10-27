@@ -4,6 +4,7 @@ use brain_kernel::deliveries::{self, Delivery, DeliveryLedger, Seen, Verdict};
 use brain_kernel::plugin::ToolPlugin;
 use brain_kernel::protocol::{CallToolResult, Tool};
 use brain_kernel::store::ResponseStore;
+use brain_kernel::text::compact_signature;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::future::Future;
@@ -211,18 +212,21 @@ impl ReadTool {
         let mut sections: Vec<Section> = snippets
             .into_iter()
             .map(|snippet| {
-                let heading = format!(
-                    "#### `{}` (`{relative}:{}-{}`)",
-                    snippet.symbol_name, snippet.start_line, snippet.end_line
-                );
-                let body = if snippet.signature.is_empty() {
-                    String::new()
+                let signature = compact_signature(&snippet.signature);
+                // The signature already names the symbol; repeating the name in
+                // a heading is pure overhead. The path lives in the header, so
+                // every symbol is one line: `- <signature> (:start-end)`.
+                let label = if signature.is_empty() {
+                    snippet.symbol_name
                 } else {
-                    format!("`{}`\n", snippet.signature)
+                    signature
                 };
                 Section {
-                    heading,
-                    body,
+                    heading: format!(
+                        "- `{label}` (:{}-{})",
+                        snippet.start_line, snippet.end_line
+                    ),
+                    body: String::new(),
                     priority: 200,
                 }
             })
@@ -366,7 +370,7 @@ impl ToolPlugin for ReadTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_read".to_string(),
-            description: "Lê um arquivo como esqueleto (assinaturas) ou o corpo de um símbolo específico, dentro de um orçamento de tokens.".to_string(),
+            description: "Lê o esqueleto do arquivo (assinaturas) ou o corpo de um símbolo; o hash do cabeçalho serve ao `brain_edit`.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -380,7 +384,7 @@ impl ToolPlugin for ReadTool {
                     },
                     "budget_tokens": {
                         "type": "integer",
-                        "description": "Teto aproximado de tokens; o excedente fica recuperável via brain_peek."
+                        "description": "Teto de tokens (excedente em brain_peek)."
                     },
                     "repeat": {
                         "type": "string",
@@ -556,6 +560,15 @@ mod tests {
         assert!(text.contains("logout"));
         assert!(text.contains("pub fn verify_token"));
         assert!(!text.contains("!raw.is_empty()"), "outline must not include bodies: {text}");
+        // One line per symbol, path once in the header: no per-symbol headings
+        // and no repeated `**Assinatura:**` label.
+        assert!(text.contains("### `auth.rs`"), "{text}");
+        assert!(
+            text.contains("- `pub fn verify_token(raw: &str) -> bool` (:1-3)"),
+            "{text}"
+        );
+        assert!(!text.contains("####"), "{text}");
+        assert!(!text.contains("Assinatura"), "{text}");
     }
 
     #[test]
