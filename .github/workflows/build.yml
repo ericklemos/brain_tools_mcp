@@ -67,3 +67,33 @@ jobs:
           name: brain-tools-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.bin }}
           if-no-files-found: error
+
+  # Token regression guard: replays bench/tasks.json against the binary that
+  # was just built and fails when a task (or the tools/list schema) grows more
+  # than 10% over the committed baseline. See docs/bench.md.
+  bench:
+    name: bench (tokens)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # brain_why reads `git log -L`; a shallow clone would change its cost.
+          fetch-depth: 0
+
+      - name: Download release binary
+        uses: actions/download-artifact@v4
+        with:
+          name: brain-tools-x86_64-unknown-linux-gnu
+          path: bin
+
+      - name: Make binary executable
+        run: chmod +x bin/brain-tools
+
+      - name: Harness unit tests
+        run: cargo test --locked -p brain-bench
+
+      - name: Measure token cost against the baseline
+        run: cargo run --locked -p brain-bench -- --server bin/brain-tools

@@ -1,0 +1,299 @@
+{
+  "version": 1,
+  "server": "target/release/brain-tools",
+  "root": ".",
+  "schema": {
+    "tools": 15,
+    "chars": 12350,
+    "tokens": 3529
+  },
+  "tasks": [
+    {
+      "id": "busca-orcamento",
+      "question": "Onde a resposta de uma ferramenta é truncada para caber no budget e como o restante é recuperado?",
+      "calls": [
+        {
+          "tool": "brain_search",
+          "request_tokens": 47,
+          "response_tokens": 1900,
+          "chars": 6649,
+          "is_error": false,
+          "millis": 16199
+        }
+      ],
+      "brain_tokens": 1947,
+      "brain_chars": 6649,
+      "naive_tokens": 7251,
+      "naive_bytes": 25404,
+      "naive_files": [
+        "crates/brain-graph/src/map_tool.rs",
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-kernel/src/peek_tool.rs"
+      ],
+      "millis": 16199
+    },
+    {
+      "id": "fluxo-busca-corpo",
+      "question": "Fluxo real: encontrar onde o mapa aplica o budget e ler o corpo do símbolo encontrado.",
+      "calls": [
+        {
+          "tool": "brain_search",
+          "request_tokens": 48,
+          "response_tokens": 1600,
+          "chars": 5598,
+          "is_error": false,
+          "millis": 16557
+        },
+        {
+          "tool": "brain_read",
+          "request_tokens": 29,
+          "response_tokens": 352,
+          "chars": 1230,
+          "is_error": false,
+          "millis": 2
+        }
+      ],
+      "brain_tokens": 2029,
+      "brain_chars": 6828,
+      "naive_tokens": 12725,
+      "naive_bytes": 44595,
+      "naive_files": [
+        "crates/brain-graph/src/map_tool.rs",
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-search/src/search_tool.rs"
+      ],
+      "millis": 16559
+    },
+    {
+      "id": "contexto-handle-diff",
+      "question": "Do que handle_diff depende e quem o chama?",
+      "calls": [
+        {
+          "tool": "brain_context_graph",
+          "request_tokens": 24,
+          "response_tokens": 519,
+          "chars": 1815,
+          "is_error": false,
+          "millis": 0
+        }
+      ],
+      "brain_tokens": 543,
+      "brain_chars": 1815,
+      "naive_tokens": 9834,
+      "naive_bytes": 34460,
+      "naive_files": [
+        "crates/brain-graph/src/diff_tool.rs",
+        "crates/brain-graph/src/graph_tool.rs",
+        "crates/brain-kernel/src/budget.rs"
+      ],
+      "millis": 0
+    },
+    {
+      "id": "contexto-arquivo-inteiro",
+      "question": "Visão de contexto do arquivo inteiro de store.rs (o caso em que o servidor pode custar mais que um Read).",
+      "calls": [
+        {
+          "tool": "brain_context_graph",
+          "request_tokens": 30,
+          "response_tokens": 2023,
+          "chars": 7079,
+          "is_error": false,
+          "millis": 0
+        }
+      ],
+      "brain_tokens": 2053,
+      "brain_chars": 7079,
+      "naive_tokens": 1536,
+      "naive_bytes": 5375,
+      "naive_files": [
+        "crates/brain-kernel/src/store.rs"
+      ],
+      "millis": 0
+    },
+    {
+      "id": "impacto-select",
+      "question": "O que quebra se eu mudar a assinatura de budget::select?",
+      "calls": [
+        {
+          "tool": "brain_impact_check",
+          "request_tokens": 19,
+          "response_tokens": 2042,
+          "chars": 7145,
+          "is_error": false,
+          "millis": 0
+        }
+      ],
+      "brain_tokens": 2061,
+      "brain_chars": 7145,
+      "naive_tokens": 27820,
+      "naive_bytes": 97511,
+      "naive_files": [
+        "crates/brain-exec/src/exec_tool.rs",
+        "crates/brain-graph/src/diff_tool.rs",
+        "crates/brain-graph/src/map_tool.rs",
+        "crates/brain-graph/src/read_tool.rs",
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-search/src/search_tool.rs"
+      ],
+      "millis": 0
+    },
+    {
+      "id": "esqueleto-watcher",
+      "question": "Qual é a forma do watcher de grafo, sem abrir o corpo das funções?",
+      "calls": [
+        {
+          "tool": "brain_read",
+          "request_tokens": 23,
+          "response_tokens": 132,
+          "chars": 462,
+          "is_error": false,
+          "millis": 0
+        }
+      ],
+      "brain_tokens": 155,
+      "brain_chars": 462,
+      "naive_tokens": 686,
+      "naive_bytes": 2400,
+      "naive_files": [
+        "crates/brain-graph/src/watcher.rs"
+      ],
+      "millis": 0
+    },
+    {
+      "id": "corpo-select",
+      "question": "Como funciona o corpo de budget::select?",
+      "calls": [
+        {
+          "tool": "brain_read",
+          "request_tokens": 28,
+          "response_tokens": 281,
+          "chars": 981,
+          "is_error": false,
+          "millis": 1
+        }
+      ],
+      "brain_tokens": 309,
+      "brain_chars": 981,
+      "naive_tokens": 2388,
+      "naive_bytes": 8363,
+      "naive_files": [
+        "crates/brain-kernel/src/budget.rs"
+      ],
+      "millis": 1
+    },
+    {
+      "id": "mapa-grafo",
+      "question": "Onde eu estou dentro do crate brain-graph?",
+      "calls": [
+        {
+          "tool": "brain_map",
+          "request_tokens": 18,
+          "response_tokens": 2002,
+          "chars": 7006,
+          "is_error": false,
+          "millis": 0
+        }
+      ],
+      "brain_tokens": 2020,
+      "brain_chars": 7006,
+      "naive_tokens": 71648,
+      "naive_bytes": 251201,
+      "naive_files": [
+        "crates/brain-graph/src/assert_tool.rs",
+        "crates/brain-graph/src/builder.rs",
+        "crates/brain-graph/src/diff_tool.rs",
+        "crates/brain-graph/src/edit_tool.rs",
+        "crates/brain-graph/src/graph_tool.rs",
+        "crates/brain-graph/src/history_tool.rs",
+        "crates/brain-graph/src/lib.rs",
+        "crates/brain-graph/src/map_tool.rs",
+        "crates/brain-graph/src/model.rs",
+        "crates/brain-graph/src/patch_tool.rs",
+        "crates/brain-graph/src/queries.rs",
+        "crates/brain-graph/src/read_tool.rs",
+        "crates/brain-graph/src/schema.rs",
+        "crates/brain-graph/src/scope.rs",
+        "crates/brain-graph/src/span.rs",
+        "crates/brain-graph/src/traversal.rs",
+        "crates/brain-graph/src/watcher.rs",
+        "crates/brain-graph/src/write_tool.rs"
+      ],
+      "millis": 0
+    },
+    {
+      "id": "assert-omitted-body",
+      "question": "omitted_body é usada fora de budget.rs?",
+      "calls": [
+        {
+          "tool": "brain_assert",
+          "request_tokens": 24,
+          "response_tokens": 153,
+          "chars": 534,
+          "is_error": false,
+          "millis": 0
+        }
+      ],
+      "brain_tokens": 177,
+      "brain_chars": 534,
+      "naive_tokens": 9780,
+      "naive_bytes": 34275,
+      "naive_files": [
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-search/src/search_tool.rs"
+      ],
+      "millis": 0
+    },
+    {
+      "id": "porque-build-graph",
+      "question": "Por que build_graph é assim?",
+      "calls": [
+        {
+          "tool": "brain_why",
+          "request_tokens": 21,
+          "response_tokens": 93,
+          "chars": 324,
+          "is_error": false,
+          "millis": 4
+        }
+      ],
+      "brain_tokens": 114,
+      "brain_chars": 324,
+      "naive_tokens": 7475,
+      "naive_bytes": 26177,
+      "naive_files": [
+        "crates/brain-graph/src/builder.rs"
+      ],
+      "millis": 4
+    },
+    {
+      "id": "repeticao-mesmo-trecho",
+      "question": "Fluxo real: reler o mesmo símbolo que a sessão já recebeu (o ledger deve apontar em vez de reenviar).",
+      "calls": [
+        {
+          "tool": "brain_read",
+          "request_tokens": 29,
+          "response_tokens": 450,
+          "chars": 1575,
+          "is_error": false,
+          "millis": 8
+        },
+        {
+          "tool": "brain_read",
+          "request_tokens": 29,
+          "response_tokens": 69,
+          "chars": 241,
+          "is_error": false,
+          "millis": 6
+        }
+      ],
+      "brain_tokens": 577,
+      "brain_chars": 1816,
+      "naive_tokens": 9385,
+      "naive_bytes": 32877,
+      "naive_files": [
+        "crates/brain-graph/src/scope.rs"
+      ],
+      "millis": 15
+    }
+  ]
+}

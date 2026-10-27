@@ -13,6 +13,9 @@ fn test_default_config() {
     assert_eq!(config.default_min_confidence, 0.65);
     assert_eq!(config.default_max_results, 5);
     assert_eq!(config.max_validate_candidates, 24);
+    assert!(config.delivery_ledger, "the ledger is on by default");
+    assert_eq!(config.delivery_entries, 512);
+    assert_eq!(config.delivery_max_bytes, 8_388_608);
 }
 
 #[test]
@@ -42,4 +45,10 @@ fn test_custom_cli_args() {
     assert_eq!(config.default_min_confidence, 0.80);
     assert_eq!(config.default_max_results, 10);
     assert_eq!(config.max_validate_candidates, 48);
+}
+
+#[test]
+fn the_delivery_ledger_can_be_turned_off() {
+    let config = Config::parse_from(["brain-tools", "--delivery-ledger", "false"]);
+    assert!(!config.delivery_ledger);
 }

@@ -1,0 +1,212 @@
+{
+  "description": "Tarefas fixas usadas para medir quanto o brain-tools gasta para responder, comparado com o custo de um agente que só tem Read. O campo `naive` lista os arquivos que esse agente abriria: é o custo contrafactual, declarado à mão, nunca inferido da resposta do servidor.",
+  "tasks": [
+    {
+      "id": "busca-orcamento",
+      "question": "Onde a resposta de uma ferramenta é truncada para caber no budget e como o restante é recuperado?",
+      "naive": [
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-kernel/src/peek_tool.rs",
+        "crates/brain-graph/src/map_tool.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_search",
+          "arguments": {
+            "natural_query": "truncamento de resposta com handle recuperável",
+            "keywords": [
+              "omitted_body",
+              "handle",
+              "budget"
+            ],
+            "max_results": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "fluxo-busca-corpo",
+      "question": "Fluxo real: encontrar onde o mapa aplica o budget e ler o corpo do símbolo encontrado.",
+      "naive": [
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-graph/src/map_tool.rs",
+        "crates/brain-search/src/search_tool.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_search",
+          "arguments": {
+            "natural_query": "onde o mapa aplica o budget e cria o handle",
+            "keywords": [
+              "handle_map",
+              "omitted_body",
+              "select"
+            ],
+            "max_results": 2
+          }
+        },
+        {
+          "tool": "brain_read",
+          "arguments": {
+            "path": "crates/brain-graph/src/map_tool.rs",
+            "symbol": "handle_map"
+          }
+        }
+      ]
+    },
+    {
+      "id": "contexto-handle-diff",
+      "question": "Do que handle_diff depende e quem o chama?",
+      "naive": [
+        "crates/brain-graph/src/diff_tool.rs",
+        "crates/brain-graph/src/graph_tool.rs",
+        "crates/brain-kernel/src/budget.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_context_graph",
+          "arguments": {
+            "target_symbol_or_file": "handle_diff"
+          }
+        }
+      ]
+    },
+    {
+      "id": "contexto-arquivo-inteiro",
+      "question": "Visão de contexto do arquivo inteiro de store.rs (o caso em que o servidor pode custar mais que um Read).",
+      "naive": [
+        "crates/brain-kernel/src/store.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_context_graph",
+          "arguments": {
+            "target_symbol_or_file": "crates/brain-kernel/src/store.rs"
+          }
+        }
+      ]
+    },
+    {
+      "id": "impacto-select",
+      "question": "O que quebra se eu mudar a assinatura de budget::select?",
+      "naive": [
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-graph/src/read_tool.rs",
+        "crates/brain-graph/src/map_tool.rs",
+        "crates/brain-graph/src/diff_tool.rs",
+        "crates/brain-exec/src/exec_tool.rs",
+        "crates/brain-search/src/search_tool.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_impact_check",
+          "arguments": {
+            "symbol_name": "select"
+          }
+        }
+      ]
+    },
+    {
+      "id": "esqueleto-watcher",
+      "question": "Qual é a forma do watcher de grafo, sem abrir o corpo das funções?",
+      "naive": [
+        "crates/brain-graph/src/watcher.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_read",
+          "arguments": {
+            "path": "crates/brain-graph/src/watcher.rs"
+          }
+        }
+      ]
+    },
+    {
+      "id": "corpo-select",
+      "question": "Como funciona o corpo de budget::select?",
+      "naive": [
+        "crates/brain-kernel/src/budget.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_read",
+          "arguments": {
+            "path": "crates/brain-kernel/src/budget.rs",
+            "symbol": "select"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mapa-grafo",
+      "question": "Onde eu estou dentro do crate brain-graph?",
+      "naive": [
+        "crates/brain-graph/src"
+      ],
+      "calls": [
+        {
+          "tool": "brain_map",
+          "arguments": {
+            "path": "crates/brain-graph"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assert-omitted-body",
+      "question": "omitted_body é usada fora de budget.rs?",
+      "naive": [
+        "crates/brain-kernel/src/budget.rs",
+        "crates/brain-search/src/search_tool.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_assert",
+          "arguments": {
+            "kind": "used_outside",
+            "symbol": "omitted_body"
+          }
+        }
+      ]
+    },
+    {
+      "id": "porque-build-graph",
+      "question": "Por que build_graph é assim?",
+      "naive": [
+        "crates/brain-graph/src/builder.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_why",
+          "arguments": {
+            "symbol": "build_graph",
+            "max_commits": 5
+          }
+        }
+      ]
+    },
+    {
+      "id": "repeticao-mesmo-trecho",
+      "question": "Fluxo real: reler o mesmo símbolo que a sessão já recebeu (o ledger deve apontar em vez de reenviar).",
+      "naive": [
+        "crates/brain-graph/src/scope.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_read",
+          "arguments": {
+            "path": "crates/brain-graph/src/scope.rs",
+            "symbol": "pick_target"
+          }
+        },
+        {
+          "tool": "brain_read",
+          "arguments": {
+            "path": "crates/brain-graph/src/scope.rs",
+            "symbol": "pick_target"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -10,7 +10,9 @@ use std::pin::Pin;
 
 use crate::scanner::LexicalScanner;
 use brain_kernel::budget::{self, Section};
+use brain_kernel::deliveries::{self, Delivery, DeliveryLedger, Verdict};
 use brain_kernel::store::ResponseStore;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::schema::brain_search_tool;
@@ -22,6 +24,8 @@ pub struct BrainSearchParams {
     pub max_results: Option<usize>,
     pub min_confidence: Option<f32>,
     pub budget_tokens: Option<usize>,
+    /// `"allow"` asks for bodies even if this session already received them.
+    pub repeat: Option<String>,
 }
 
 pub struct SearchHandler {
@@ -33,6 +37,23 @@ pub struct SearchHandler {
     default_min_confidence: f32,
     store: Option<Arc<ResponseStore>>,
     default_budget_tokens: usize,
+    ledger: Option<Arc<DeliveryLedger>>,
+}
+
+/// A result section plus what to tell the ledger once it is decided whether
+/// the section entered the response.
+struct Rendered {
+    section: Section,
+    pending: Option<Pending>,
+}
+
+struct Pending {
+    path: PathBuf,
+    id: String,
+    file_hash: blake3::Hash,
+    text: String,
+    complete: bool,
+    omitted: bool,
 }
 
 impl SearchHandler {
@@ -43,6 +64,13 @@ impl SearchHandler {
     pub fn with_budget(mut self, store: Arc<ResponseStore>, default_budget_tokens: usize) -> Self {
         self.store = Some(store);
         self.default_budget_tokens = default_budget_tokens;
+        self
+    }
+
+    /// Opts into the delivery ledger: a snippet this session already received
+    /// is pointed at instead of re-sent while its file has not changed.
+    pub fn with_deliveries(mut self, ledger: Option<Arc<DeliveryLedger>>) -> Self {
+        self.ledger = ledger;
         self
     }
 }
@@ -64,6 +92,7 @@ impl SearchHandler {
             default_min_confidence,
             store: None,
             default_budget_tokens: 2000,
+            ledger: None,
         }
     }
 
@@ -171,17 +200,20 @@ impl SearchHandler {
             outcome.lexical_fallback,
         );
 
-        let mut sections = Vec::with_capacity(scored.len() + 1);
+        let repeat_allowed = params.repeat.as_deref() == Some("allow");
+        let mut rendered: Vec<Rendered> = Vec::with_capacity(scored.len() + 1);
+        // One read per file, however many snippets it contributed.
+        let mut contents: HashMap<PathBuf, String> = HashMap::new();
 
         for (idx, item) in scored.iter().enumerate() {
-            let relative_path = item
-                .snippet
+            let snippet = &item.snippet;
+            let relative_path = snippet
                 .file_path
                 .strip_prefix(&self.root_dir)
-                .unwrap_or(&item.snippet.file_path)
+                .unwrap_or(&snippet.file_path)
                 .display();
 
-            let lang = if item.snippet.file_path.extension().and_then(|e| e.to_str()) == Some("kt") {
+            let lang = if snippet.file_path.extension().and_then(|e| e.to_str()) == Some("kt") {
                 "kotlin"
             } else {
                 "rust"
@@ -190,25 +222,40 @@ impl SearchHandler {
             let heading = format!(
                 "#### {}. `{}` (`{}:{}-{}`)",
                 idx + 1,
-                item.snippet.symbol_name,
+                snippet.symbol_name,
                 relative_path,
-                item.snippet.start_line,
-                item.snippet.end_line,
+                snippet.start_line,
+                snippet.end_line,
             );
 
             let mut body = String::new();
-            if !item.snippet.signature.is_empty() {
-                body.push_str(&format!("**Assinatura:** `{}`\n\n", item.snippet.signature));
+            if !snippet.signature.is_empty() {
+                body.push_str(&format!("**Assinatura:** `{}`\n\n", snippet.signature));
             }
-            body.push_str(&format!("```{}\n{}\n```\n\n", lang, item.snippet.code));
+            body.push_str(&format!("```{}\n{}\n```\n\n", lang, snippet.code));
 
-            sections.push(Section {
-                heading,
-                body,
-                // Higher confidence survives truncation.
-                priority: (item.score * 200.0) as u8,
+            let pending = self.apply_ledger(
+                snippet,
+                &mut contents,
+                &mut body,
+                repeat_allowed,
+            );
+
+            rendered.push(Rendered {
+                section: Section {
+                    heading,
+                    body,
+                    // Higher confidence survives truncation.
+                    priority: (item.score * 200.0) as u8,
+                },
+                pending,
             });
         }
+
+        let sections: Vec<Section> = rendered
+            .iter()
+            .map(|rendered| rendered.section.clone())
+            .collect();
 
         if self.store.is_none() {
             // No store configured: render everything, as before this contract.
@@ -237,12 +284,118 @@ impl SearchHandler {
             )
         };
 
+        self.settle(&rendered, &selection);
+
         let mut out = format!(
             "### Resultados da Busca (`{}`)\n{}\n\n> Trecho verbatim do arquivo, corpo completo do símbolo.\n\n",
             params.natural_query, completeness
         );
         out.push_str(&budget::render(&selection, handle.as_deref()));
         CallToolResult::text(out)
+    }
+
+    /// Replaces the body with a pointer or a diff when the ledger already has
+    /// this snippet, and reports what to record once the section is included.
+    fn apply_ledger(
+        &self,
+        snippet: &brain_kernel::ast::AstSnippet,
+        contents: &mut HashMap<PathBuf, String>,
+        body: &mut String,
+        repeat_allowed: bool,
+    ) -> Option<Pending> {
+        let ledger = self.ledger.as_ref()?;
+        let content = contents
+            .entry(snippet.file_path.clone())
+            .or_insert_with(|| std::fs::read_to_string(&snippet.file_path).unwrap_or_default());
+        if content.is_empty() {
+            return None;
+        }
+
+        let range = deliveries::line_span(content, snippet.start_line, snippet.end_line)?;
+        let span_text = content.get(range).unwrap_or("");
+        let complete = span_text.trim() == snippet.code.trim();
+        let file_hash = deliveries::content_hash(content);
+        // The line is part of the identity here: a snippet has no container,
+        // and two `new`s in one file would otherwise share a pointer.
+        let id = format!("{}@{}", snippet.symbol_name, snippet.start_line);
+
+        let verdict = if repeat_allowed {
+            Verdict::Fresh
+        } else {
+            ledger.check(
+                &snippet.file_path,
+                &id,
+                &file_hash,
+                span_text,
+                snippet.start_line,
+            )
+        };
+
+        let draft = Pending {
+            path: snippet.file_path.clone(),
+            id: id.clone(),
+            file_hash,
+            text: span_text.to_string(),
+            complete,
+            omitted: false,
+        };
+
+        match verdict {
+            Verdict::Seen(seen) => {
+                let store = self.store.as_ref()?;
+                let handle =
+                    deliveries::live_handle(store, ledger, &seen, &snippet.file_path, &id);
+                *body = deliveries::pointer_body(&seen, &handle);
+                Some(Pending {
+                    omitted: true,
+                    ..draft
+                })
+            }
+            Verdict::Changed(changed) => {
+                *body = deliveries::changed_body(&changed);
+                Some(draft)
+            }
+            Verdict::Full { reason, .. } => {
+                *body = format!("{}\n{}", deliveries::full_note(reason), body);
+                Some(draft)
+            }
+            Verdict::Fresh => Some(draft),
+        }
+    }
+
+    /// Records only what entered the response: a snippet cut by the budget was
+    /// not seen, so it must not be remembered as delivered.
+    fn settle(&self, rendered: &[Rendered], selection: &budget::Selection) {
+        let Some(ledger) = &self.ledger else {
+            return;
+        };
+        let included: HashSet<&str> = selection
+            .included
+            .iter()
+            .map(|section| section.heading.as_str())
+            .collect();
+
+        for rendered in rendered {
+            let Some(pending) = &rendered.pending else {
+                continue;
+            };
+            if !included.contains(rendered.section.heading.as_str()) {
+                continue;
+            }
+            if pending.omitted {
+                ledger.note_omitted(&pending.path, &pending.id);
+            } else {
+                ledger.record(Delivery {
+                    tool: "brain_search",
+                    path: &pending.path,
+                    id: &pending.id,
+                    file_hash: pending.file_hash,
+                    text: &pending.text,
+                    complete: pending.complete,
+                    handle: None,
+                });
+            }
+        }
     }
 }
 
@@ -503,4 +656,87 @@ fn the_validation_cap_is_declared_separately_from_max_results() {
     );
     assert!(text.contains("5 de 24 candidatas casaram com a query"));
 }
+
+    fn ledger_handler(root: &std::path::Path, ledger: Arc<DeliveryLedger>) -> (SearchHandler, Arc<ResponseStore>) {
+        let validator = ValidationClient::new(None, 0);
+        let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+        let handler = SearchHandler::new(root, validator, 5, 0.0)
+            .with_budget(store.clone(), 4000)
+            .with_deliveries(Some(ledger));
+        (handler, store)
+    }
+
+    #[tokio::test]
+    async fn the_second_search_of_the_same_snippet_is_a_pointer() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("auth.rs"),
+            "pub fn verify_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
+        )
+        .unwrap();
+
+        let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
+        let (handler, store) = ledger_handler(root, ledger);
+
+        let args = || serde_json::json!({ "natural_query": "verify token", "keywords": ["verify_token"] });
+        let first = handler.handle_brain_search(args()).await.content[0].text.clone();
+        assert!(first.contains("!raw.is_empty()"), "{first}");
+
+        let second = handler.handle_brain_search(args()).await.content[0].text.clone();
+        assert!(second.contains("Já entregue nesta sessão"), "{second}");
+        assert!(!second.contains("!raw.is_empty()"), "{second}");
+
+        let handle = second
+            .split("`brain_peek` em `")
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .expect("pointer cites a handle");
+        assert!(store.get(handle).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_changed_file_turns_the_search_hit_into_a_diff() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let file = root.join("auth.rs");
+        fs::write(&file, "pub fn verify_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n").unwrap();
+
+        let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
+        let (handler, _) = ledger_handler(root, ledger);
+        let args = || serde_json::json!({ "natural_query": "verify token", "keywords": ["verify_token"] });
+
+        handler.handle_brain_search(args()).await;
+        fs::write(&file, "pub fn verify_token(raw: &str) -> bool {\n    !raw.trim().is_empty()\n}\n").unwrap();
+
+        let second = handler.handle_brain_search(args()).await.content[0].text.clone();
+        assert!(second.contains("Mudou desde a entrega"), "{second}");
+        assert!(second.contains("+    !raw.trim().is_empty()"), "{second}");
+    }
+
+    #[tokio::test]
+    async fn repeat_allow_returns_the_body_from_search() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("auth.rs"), "pub fn verify_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n").unwrap();
+
+        let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
+        let (handler, _) = ledger_handler(root, ledger);
+
+        handler
+            .handle_brain_search(serde_json::json!({ "natural_query": "verify token", "keywords": ["verify_token"] }))
+            .await;
+        let again = handler
+            .handle_brain_search(serde_json::json!({
+                "natural_query": "verify token",
+                "keywords": ["verify_token"],
+                "repeat": "allow"
+            }))
+            .await
+            .content[0]
+            .text
+            .clone();
+        assert!(again.contains("!raw.is_empty()"), "{again}");
+        assert!(!again.contains("Já entregue"), "{again}");
+    }
 }

@@ -17,6 +17,8 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
 2. **`brain_context_graph` (Ego-Grafo de Chamadas):**
    - Grafo direcionado em memória (`petgraph::stable_graph::StableDiGraph`).
    - Retorna apenas as assinaturas de quem chama e do que o símbolo consome a $k$ saltos de distância, sem poluir o contexto com corpos inteiros.
+   - **Uma chamada é uma aresta.** A query de chamadas casa o mesmo nó por mais de um padrão (um carrega o `receiver`, outro o `call_path`); os padrões são fundidos pelo span do nome antes da resolução, então não há aresta repetida nem chamada contada duas vezes na confiança do grafo.
+   - Quando o alvo é um arquivo inteiro, as seções vazias viram **uma** linha de manchete (`N sem chamadas de entrada, M sem consumo externo`) em vez de se repetirem símbolo a símbolo.
 
 3. **`brain_impact_check` (Análise de Impacto Reverso):**
    - Percorre dependências reversas transitivas no grafo para apontar todos os pontos do repositório que quebram caso uma assinatura seja modificada.
@@ -32,38 +34,68 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
    - Cache por hash do conteúdo indexado + estado dos manifests: repetir sem mudar nada devolve uma linha.
    - Um build com 40 erros sai em ~1.300 caracteres, com o restante recuperável por `brain_peek`.
 
-5. **`brain_peek` (Recuperação de Resposta Truncada):**
+5. **`brain_shell` (Shell Explícito):**
+   - Executa um comando em `bash -lc` com cwd no root e devolve stdout, stderr e código de saída, dentro do mesmo contrato de orçamento.
+   - Substitui o `shell` nativo para git, formatadores e ferramentas que o enum do `brain_exec` não cobre. Não é um sandbox: `--shell-disabled` remove a ferramenta.
+
+6. **`brain_peek` (Recuperação de Resposta Truncada):**
    - Toda ferramenta respeita `budget_tokens`: o excedente sai do contexto e fica recuperável por um handle `h_xxxxxxxx` (TTL de 30 min), paginável por `offset_chars`.
    - O envelope de truncamento anuncia quantas seções ficaram de fora — a resposta nunca "parece completa" sem ser.
 
-6. **`brain_read` (Leitura Cirúrgica):**
+7. **`brain_read` (Leitura Cirúrgica):**
    - Sem `symbol`: devolve o esqueleto do arquivo (uma seção por símbolo, só assinatura). Com `symbol`: devolve só o corpo daquele símbolo, com a linguagem certa no fence.
    - Resolve o caminho contra `--root-dir` e recusa traversal (`../../etc/passwd`) em vez de ler a máquina.
 
-7. **`brain_map` (Mapa do Repositório):**
+8. **`brain_edit` (Edição Cirúrgica por Span):**
+   - Edita o corpo de um símbolo existente por nome — `path`, `symbol`, `expected_hash` e `new_body` —, nunca por âncora de texto nem arquivo inteiro.
+   - O `expected_hash` é o blake3 que o `brain_read` imprime no cabeçalho; se o arquivo mudou desde a leitura, a edição é recusada em vez de sobrescrever trabalho alheio.
+   - Resolve o span na AST (inclusive métodos dentro de `impl`), recusa símbolo ambíguo ou item sem corpo e re-parseia antes de escrever: sintaxe inválida não toca no disco.
+   - Escrita atômica (`temp` no mesmo diretório + `rename`), releitura pós-escrita e verificação de hash/span/corpo. Sem formatação automática; o retry de uma resposta perdida responde "já aplicada" sem reescrever.
+
+9. **`brain_write` (Arquivo Inteiro):**
+   - Cria ou substitui um arquivo de texto sob o root — configs, docs, módulos novos —, com escrita atômica e releitura de verificação.
+   - Sobrescrever exige o blake3 atual em `expected_hash` (ou `overwrite: true`); caminhos são canonicalizados e symlinks para fora do root são recusados.
+
+10. **`brain_patch` (Diff Unificado):**
+   - Aplica a saída de `git diff` (arquivos novos, remoções, trechos fora de símbolos) com `git apply --check` antes de escrever.
+   - Recusa caminhos fora do root, `.git/` e criação de symlink; `check_only` valida sem tocar na árvore e `reverse: true` desfaz.
+
+11. **`brain_map` (Mapa do Repositório):**
    - Um arquivo por seção, com os símbolos e assinaturas, ordenado por fan-in (quantas chamadas o arquivo recebe).
    - Carrega a mesma linha de confiança do grafo: a ordenação por centralidade só vale o que a resolução de chamadas vale.
    - É a resposta para "onde eu estou?" sem abrir nenhum arquivo; `path` restringe a um subtree.
 
-8. **`brain_assert` (Perguntas Sim/Não):**
+12. **`brain_assert` (Perguntas Sim/Não):**
    - `exists`, `public` e `used_outside` respondem `SIM`/`NÃO` com a evidência em uma linha — o símbolo existe, é API pública (não `pub(crate)`), ou tem chamadas de outro arquivo/módulo.
    - Encerra o ciclo "achei que era usado, deixa eu grepar para confirmar".
 
-9. **`brain_diff` (Diff com Impacto):**
+13. **`brain_diff` (Diff com Impacto):**
    - Parseia `git diff --unified=0`, mapeia as linhas alteradas para símbolos do grafo e devolve: símbolos alterados, chamadores **fora** dos arquivos alterados e testes que dependem deles.
    - `include: ["impact", "tests"]` permite pedir só uma das seções quando o custo do teste não importa.
 
-10. **`brain_why` (Histórico de Símbolo):**
+14. **`brain_why` (Histórico de Símbolo):**
     - Roda `git log -L` nas linhas exatas do símbolo e devolve commits (hash, autor, data, assunto) — sem despejar o patch.
     - Responde "por que este código é assim?" no lugar de abrir o histórico do arquivo inteiro.
 
-11. **`brain_ledger` (Memória Durável):**
+15. **`brain_ledger` (Memória Durável):**
     - Fatos e decisões do projeto em `.brain/ledger.jsonl` (append-only), deduplicados por hash do texto normalizado.
     - `record`, `list` e `search` — a decisão não precisa ser redescoberta na próxima sessão.
 
-12. **Sincronização Incremental em Segundo Plano:**
-   - Watcher assíncrono via `notify` e `blake3`.
-   - Ao salvar um arquivo no editor, o grafo atualiza apenas os nós modificados em milissegundos sem reindexar o projeto todo.
+16. **Sincronização Incremental em Segundo Plano:**
+    - Watcher assíncrono via `notify` e `blake3`.
+    - Ao salvar um arquivo no editor, o grafo atualiza apenas os nós modificados em milissegundos sem reindexar o projeto todo.
+
+17. **`brain-bench` (Medição de Economia de Tokens):**
+   - Não é uma ferramenta MCP: é um harness que sobe o binário real por stdio e replaya tarefas fixas de `bench/tasks.json`, comparando os tokens entregues com o custo de reler os arquivos que a resposta cobre.
+   - Toda tarefa declara seu baseline `naive` à mão — o servidor nunca infere o próprio custo contrafactual.
+   - Guarda de regressão: `cargo run -p brain-bench` falha quando uma tarefa (ou o schema de `tools/list`) cresce mais que o teto configurado sobre `bench/baseline.json`.
+   - Detalhes em 👉 [**docs/bench.md**](docs/bench.md).
+
+18. **Ledger de Entrega (não pagar duas vezes pelo mesmo trecho):**
+   - O daemon lembra o que **esta sessão** já entregou: `brain_read` e `brain_search` guardam o texto e o blake3 do arquivo no momento da entrega.
+   - Pedir o mesmo símbolo de novo, com o arquivo intacto, devolve uma linha apontando para um handle vivo em vez do corpo; se o arquivo mudou, devolve **só o diff** do símbolo.
+   - Um recorte (corpo truncado) nunca vira ponteiro nem diff: o corpo inteiro volta com o motivo escrito. `repeat: "allow"` força o corpo, e a terceira repetição seguida também.
+   - Ligado por padrão; `--delivery-ledger false` reproduz o comportamento anterior. Desenho em [docs/superpowers/specs/2026-10-27-delivery-ledger-design.md](docs/superpowers/specs/2026-10-27-delivery-ledger-design.md).
 
 ---
 
@@ -146,8 +178,13 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 | `--default-budget-tokens` | `2000` | Teto aproximado de tokens por resposta; o excedente vai para `brain_peek`. |
 | `--handle-ttl-secs` | `1800` | Tempo que uma resposta truncada continua recuperável. |
 | `--handle-max-bytes` | `67108864` | Teto de memória do store de handles (64 MB). |
+| `--delivery-ledger` | `true` | Lembra o que a sessão já entregou e aponta para isso em vez de reenviar (`false` desliga). |
+| `--delivery-entries` | `512` | Quantos símbolos entregues o ledger guarda antes de despejar o mais antigo. |
+| `--delivery-max-bytes` | `8388608` | Teto de bytes de texto guardado para ponteiros e diffs. |
 | `--exec-timeout-secs` | `300` | Mata o `brain_exec` após N segundos e devolve o parcial. |
 | `--exec-disabled` | `false` | Não registra `brain_exec`, para hosts onde spawn de processo não é aceitável. |
+| `--shell-timeout-secs` | `120` | Mata um comando do `brain_shell` após N segundos. |
+| `--shell-disabled` | `false` | Não registra `brain_shell`; use quando "somente leitura" precisa ser garantia, não comportamento. |
 | `--log-level` | `info` | Filtro de log (sempre em `stderr`, nunca no stdout do protocolo). |
 | `--threads`, `-t` | — | Threads de CPU para busca e inferência. |
 
@@ -279,6 +316,12 @@ devolveu. São duas camadas, com poderes diferentes: **instrução** orienta, **
 sobrepõe (o harness recusa a chamada). O bloco pronto para colar em
 `~/.claude/CLAUDE.md` e o hook estão em 👉 [**docs/hooks.md**](docs/hooks.md).
 
+No **OpenCode V2** a trava não é hook, é permissão: dá para negar `read`, `edit`,
+`glob`, `grep` e `shell` e deixar o agente falar com o projeto só pelo MCP. A
+receita completa — incluindo o que essa trava custa e como o `brain_edit` fecha o ciclo
+de escrita por símbolo — está em 👉 [**docs/opencode.md**](docs/opencode.md),
+com um [`opencode.example.json`](docs/opencode.example.json) pronto para copiar.
+
 Em resumo, a instrução precisa dizer três coisas:
 
 ```markdown
@@ -288,9 +331,11 @@ O resultado de `brain_search` / `brain_context_graph` / `brain_impact_check` **�
 leitura do código: trecho verbatim, com `path:start-end`. Trate-o como já lido e não
 chame `Read` no mesmo arquivo para conferir. Score baixo não é motivo de desconfiança:
 ele ordena candidatas entre si, não mede veracidade. `Read` só é legítimo para imports
-e contexto fora da faixa devolvida, para o arquivo que será editado (`Edit` exige
-leitura prévia) ou quando a resposta declarar corte. Se a busca não respondeu, refine
-a busca — não abra o arquivo.
+e contexto fora da faixa devolvida, para um símbolo que você ainda não viu ou quando a
+resposta declarar corte. Para editar um símbolo já visto, use `brain_edit` com o hash
+do `brain_read` e o `new_body` completo — sem `Read` + `Edit`; para arquivos inteiros e
+diffs, use `brain_write` / `brain_patch`. Se a busca não respondeu, refine a busca —
+não abra o arquivo.
 ```
 
 Se uma chamada MCP falhar, o agente deve dizer isso explicitamente em vez de
@@ -353,8 +398,9 @@ claude mcp list
 ```
 
 Devem aparecer `brain_search`, `brain_context_graph`, `brain_impact_check`, `brain_peek`,
-`brain_exec`, `brain_read`, `brain_map`, `brain_assert`, `brain_diff`, `brain_why` e
-`brain_ledger` (`brain_exec` só não aparece com `--exec-disabled`). Se faltar alguma, o
+`brain_exec`, `brain_shell`, `brain_read`, `brain_edit`, `brain_write`, `brain_patch`,
+`brain_map`, `brain_assert`, `brain_diff`, `brain_why` e `brain_ledger` (`brain_exec` só
+não aparece com `--exec-disabled`; `brain_shell` com `--shell-disabled`). Se faltar alguma, o
 binário é antigo.
 
 ### 4. Instrução — `~/.claude/CLAUDE.md`
@@ -385,7 +431,11 @@ relativo não resolve):
       "mcp__brain-tools__brain_impact_check",
       "mcp__brain-tools__brain_peek",
       "mcp__brain-tools__brain_exec",
+      "mcp__brain-tools__brain_shell",
       "mcp__brain-tools__brain_read",
+      "mcp__brain-tools__brain_edit",
+      "mcp__brain-tools__brain_write",
+      "mcp__brain-tools__brain_patch",
       "mcp__brain-tools__brain_map",
       "mcp__brain-tools__brain_assert",
       "mcp__brain-tools__brain_diff",
@@ -464,6 +514,23 @@ Para rodar todos os testes de unidade, integração e smoke tests:
 cargo test
 ```
 
+## 📉 Medindo a economia de tokens
+
+A pergunta "isto economiza tokens?" tem número, não opinião:
+
+```bash
+cargo build --release
+cargo run -p brain-bench -- --update   # grava bench/baseline.json
+cargo run -p brain-bench               # compara e falha se houver regressão
+```
+
+O relatório mostra, por tarefa, os tokens entregues (`brain`), o custo de um
+`Read` que cobriria a mesma resposta (`naïve`) e o fator entre eles — inclusive
+quando o fator fica abaixo de `1,0x`, que é o servidor custando **mais** que
+abrir o arquivo. O `tools/list` é medido à parte porque é pago a cada
+requisição. Regras, opções e como adicionar tarefas em
+👉 [**docs/bench.md**](docs/bench.md).
+
 ---
 
 ## 🧩 Estrutura do Workspace
@@ -480,6 +547,7 @@ crates/
   brain-exec/     runner do cargo, parsers (JSON e libtest), cache + brain_exec
   brain-engine/   inferência GGUF (llama-cpp-2 isolado aqui)
   brain-tools/    binário, monta o Registry em main.rs e re-exporta os caminhos antigos
+  brain-bench/    harness de economia de tokens (cliente MCP + baseline), fora do servidor
 ```
 
 Adicionar uma ferramenta é criar o tipo no crate dela e uma linha de `register` em

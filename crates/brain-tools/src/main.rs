@@ -1,13 +1,17 @@
 use brain_graph::assert_tool::AssertTool;
 use brain_graph::builder::GraphBuilder;
 use brain_graph::diff_tool::DiffTool;
+use brain_graph::edit_tool::EditTool;
+use brain_graph::patch_tool::PatchTool;
+use brain_graph::write_tool::WriteTool;
 use brain_graph::graph_tool::{GraphContextTool, GraphImpactTool, GraphHandler};
 use brain_graph::history_tool::HistoryTool;
 use brain_graph::map_tool::MapTool;
 use brain_graph::read_tool::ReadTool;
 use brain_graph::watcher::GraphWatcher;
 use brain_engine::ValidationClient;
-use brain_exec::ExecTool;
+use brain_exec::{ExecTool, ShellTool};
+use brain_kernel::deliveries::DeliveryLedger;
 use brain_kernel::ledger_tool::LedgerTool;
 use brain_kernel::peek_tool::PeekTool;
 use brain_kernel::store::ResponseStore;
@@ -50,6 +54,14 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(config.handle_ttl_secs),
         config.handle_max_bytes,
     ));
+    // Remembering what this session already delivered is the cheapest token:
+    // the one not sent twice.
+    let deliveries = config.delivery_ledger.then(|| {
+        Arc::new(DeliveryLedger::new(
+            config.delivery_entries,
+            config.delivery_max_bytes,
+        ))
+    });
     let search_handler = Arc::new(
         SearchHandler::new(
             &config.root_dir,
@@ -57,7 +69,8 @@ async fn main() -> anyhow::Result<()> {
             config.default_max_results,
             config.default_min_confidence,
         )
-        .with_budget(store.clone(), config.default_budget_tokens),
+        .with_budget(store.clone(), config.default_budget_tokens)
+        .with_deliveries(deliveries.clone()),
     );
 
     // Initialize in-memory CodeGraph and Watcher
@@ -109,13 +122,43 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!(e))?;
     }
 
+    if config.shell_disabled {
+        tracing::info!("brain_shell disabled by configuration");
+    } else {
+        registry
+            .register(Arc::new(ShellTool::new(
+                &config.root_dir,
+                store.clone(),
+                config.default_budget_tokens,
+                Duration::from_secs(config.shell_timeout_secs),
+            )))
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+
     // Orientation and history tools: they read the same watch-maintained graph.
     registry
-        .register(Arc::new(ReadTool::new(
+        .register(Arc::new(
+            ReadTool::new(
+                &config.root_dir,
+                store.clone(),
+                config.default_budget_tokens,
+            )
+            .with_deliveries(deliveries.clone()),
+        ))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(EditTool::new(
             &config.root_dir,
+            code_graph.clone(),
             store.clone(),
             config.default_budget_tokens,
         )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(WriteTool::new(&config.root_dir)))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(PatchTool::new(&config.root_dir)))
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
         .register(Arc::new(MapTool::new(

@@ -30,9 +30,17 @@ Não é uma busca auxiliar: o resultado dele **é** a leitura do arquivo.
   como conteúdo já lido. **Não** chame `Read` no mesmo arquivo para conferir.
 - Score baixo não é motivo para desconfiar: ele ordena candidatas entre si; não mede
   veracidade. O resultado traz a contagem de candidatas para dizer se algo ficou de fora.
-- `Read` é legítimo apenas para: (a) imports/contexto fora da faixa devolvida, (b) o
-  arquivo que você vai editar — `Edit` exige leitura prévia, (c) quando a resposta
-  declara corte. Nesses casos leia **só a faixa necessária** (`offset`/`limit`).
+- `Read` é legítimo apenas para: (a) imports/contexto fora da faixa devolvida,
+  (b) um símbolo que você **ainda não viu** — depois da primeira leitura, `brain_edit`
+  substitui `Read` + `Edit`, (c) quando a resposta declara corte. Nesses casos leia
+  **só a faixa necessária** (`offset`/`limit`).
+- **Editar símbolo existente usa `brain_edit`** com o `path`, o `symbol`, o
+  `expected_hash` que o `brain_read` imprime no cabeçalho e o `new_body` (o bloco
+  `{ … }` completo). Não reproduza a âncora literal do `Edit` nem releia o arquivo
+  inteiro para editar. Se o hash divergir, o arquivo mudou: releia o símbolo e reenvie
+  o hash atual — a ferramenta nunca escreve sobre uma versão que você não viu.
+- Arquivo inteiro (config, doc, arquivo novo) usa `brain_write`; diff unificado usa
+  `brain_patch`; terminal (git, formatador) usa `brain_shell`, nunca `shell` nativo.
 - Se a busca não respondeu, refine a busca (outra keyword, `max_results` maior,
   `brain_context_graph`) — não abra o arquivo.
 
@@ -54,7 +62,18 @@ sessão, quando o arquivo não mudou desde então.
       "mcp__brain-tools__brain_search",
       "mcp__brain-tools__brain_context_graph",
       "mcp__brain-tools__brain_impact_check",
-      "mcp__brain-tools__brain_peek"
+      "mcp__brain-tools__brain_peek",
+      "mcp__brain-tools__brain_exec",
+      "mcp__brain-tools__brain_shell",
+      "mcp__brain-tools__brain_read",
+      "mcp__brain-tools__brain_edit",
+      "mcp__brain-tools__brain_write",
+      "mcp__brain-tools__brain_patch",
+      "mcp__brain-tools__brain_map",
+      "mcp__brain-tools__brain_assert",
+      "mcp__brain-tools__brain_diff",
+      "mcp__brain-tools__brain_why",
+      "mcp__brain-tools__brain_ledger"
     ]
   },
   "hooks": {
@@ -110,6 +129,15 @@ BRAIN_READ_ONCE_STATE_DIR=$(mktemp -d) python3 -I scripts/brain-read-once.py <<'
 JSON
 # depois repita com "PreToolUse": deve sair com código 2 e a mensagem no stderr
 ```
+
+## Edição e o hook
+
+`brain_edit` é uma tool MCP, não o `Edit` nativo: o gate read-before-edit do harness
+não se aplica a ela. A garantia equivalente é o `expected_hash` — e, como regras
+`Read(path)` de `permissions.deny` só valem para ferramentas nativas, restringir
+`brain_edit` exige um deny em `mcp__brain-tools__brain_edit` ou um `PreToolUse` com
+matcher na tool. O hook de releitura continua útil, mas deixa de ser pré-requisito
+para editar.
 
 ## Limite conhecido
 

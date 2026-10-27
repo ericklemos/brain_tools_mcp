@@ -1,11 +1,11 @@
-use brain_kernel::ast::SupportedLanguage;
-use brain_kernel::{BrainError, Result};
 use crate::model::*;
 use crate::queries::GraphQueries;
 use crate::scope::{self, ImportTarget, Resolution, ScopeResolver};
+use brain_kernel::ast::SupportedLanguage;
+use brain_kernel::{BrainError, Result};
 use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use streaming_iterator::StreamingIterator;
@@ -13,6 +13,15 @@ use tree_sitter::{Node, Parser, QueryCursor};
 
 pub struct GraphBuilder {
     queries: GraphQueries,
+}
+
+/// One call expression in a file, with the captures of every query pattern
+/// that matched it merged together.
+struct CallSite {
+    name: String,
+    line: usize,
+    path: Option<String>,
+    receiver: Option<String>,
 }
 
 impl GraphBuilder {
@@ -319,7 +328,8 @@ impl GraphBuilder {
                     .to_string();
                 // `use super::x` inside `mod tests` climbs from the inline
                 // module, not from the file's top level.
-                let module = module_context(capture.node, content.as_bytes(), path, &code_graph.resolver);
+                let module =
+                    module_context(capture.node, content.as_bytes(), path, &code_graph.resolver);
 
                 for item in scope::expand_use(&raw) {
                     match &item {
@@ -333,10 +343,14 @@ impl GraphBuilder {
                                 }
                             }
                         }
-                        scope::UseItem::Named { name, path: import_path } => {
-                            if let Some(target) = code_graph
-                                .resolver
-                                .resolve_import_in(path, &module, import_path)
+                        scope::UseItem::Named {
+                            name,
+                            path: import_path,
+                        } => {
+                            if let Some(target) =
+                                code_graph
+                                    .resolver
+                                    .resolve_import_in(path, &module, import_path)
                             {
                                 scope.imports.insert(name.clone(), target);
                             }
@@ -380,6 +394,14 @@ impl GraphBuilder {
         let empty_scope = crate::scope::FileScope::default();
         let scope = code_graph.scopes.get(path).unwrap_or(&empty_scope).clone();
 
+        // The call query overlaps on purpose: a single `crate::a::f()` matches
+        // both the scoped and the path-shaped pattern, each carrying a
+        // different piece of evidence (`receiver` vs `call_path`). Feeding
+        // every match to the resolver produced two identical edges and counted
+        // the same call twice in the confidence line — one call site is one
+        // decision, so matches are merged by the name node's byte span and the
+        // captures are combined.
+        let mut sites: BTreeMap<(usize, usize), CallSite> = BTreeMap::new();
         while let Some(m) = matches.next() {
             let mut called_name = None;
             let mut call_path = None;
@@ -407,13 +429,29 @@ impl GraphBuilder {
                 continue;
             }
 
-            let call_line = name_node.start_position().row + 1;
+            let site = sites
+                .entry((name_node.start_byte(), name_node.end_byte()))
+                .or_insert_with(|| CallSite {
+                    name: called_name.clone(),
+                    line: name_node.start_position().row + 1,
+                    path: None,
+                    receiver: None,
+                });
+            if site.path.is_none() {
+                site.path = call_path;
+            }
+            if site.receiver.is_none() {
+                site.receiver = receiver;
+            }
+        }
 
+        for site in sites.values() {
             // The caller is the innermost definition containing the call, not
             // the first one: closures and nested functions live inside their
             // parent, and picking the parent would attribute the edge to the
             // wrong node.
-            let Some(caller) = innermost_enclosing(&file_node_indices, code_graph, call_line) else {
+            let Some(caller) = innermost_enclosing(&file_node_indices, code_graph, site.line)
+            else {
                 continue;
             };
             let caller_container = code_graph
@@ -425,14 +463,14 @@ impl GraphBuilder {
                 code_graph,
                 &scope,
                 path,
-                &called_name,
-                call_path.as_deref(),
-                receiver.as_deref(),
+                &site.name,
+                site.path.as_deref(),
+                site.receiver.as_deref(),
                 caller_container.as_deref(),
                 &bindings,
-                call_line,
+                site.line,
             );
-            code_graph.resolution.record(&called_name, &resolution);
+            code_graph.resolution.record(&site.name, &resolution);
 
             if let Resolution::Resolved(callee) = resolution {
                 if caller != callee {
@@ -441,7 +479,7 @@ impl GraphBuilder {
                         callee,
                         RelationEdge {
                             kind: RelationKind::Calls,
-                            call_site_line: call_line,
+                            call_site_line: site.line,
                         },
                     );
                 }
@@ -636,7 +674,11 @@ fn last_type_segment(text: &str) -> String {
 }
 
 /// The most recent binding of `receiver` at or before `line`.
-fn binding_type_at(bindings: &[(usize, String, String)], receiver: &str, line: usize) -> Option<String> {
+fn binding_type_at(
+    bindings: &[(usize, String, String)],
+    receiver: &str,
+    line: usize,
+) -> Option<String> {
     bindings
         .iter()
         .filter(|(bind_line, name, _)| *bind_line <= line && name == receiver)
@@ -646,12 +688,7 @@ fn binding_type_at(bindings: &[(usize, String, String)], receiver: &str, line: u
 
 /// The module path a `use` at `node` resolves from: the file's module plus any
 /// inline `mod x { … }` it sits inside.
-fn module_context(
-    node: Node,
-    source: &[u8],
-    file: &Path,
-    resolver: &ScopeResolver,
-) -> String {
+fn module_context(node: Node, source: &[u8], file: &Path, resolver: &ScopeResolver) -> String {
     let file_module = resolver
         .file_module(file)
         .map(str::to_string)

@@ -52,6 +52,24 @@ pub struct Config {
     #[arg(long, env = "BRAIN_HANDLE_MAX_BYTES", default_value_t = 67_108_864)]
     pub handle_max_bytes: usize,
 
+    /// Remember what this session already delivered and point at it instead of
+    /// sending the same body again (`--delivery-ledger false` disables it)
+    #[arg(
+        long,
+        env = "BRAIN_DELIVERY_LEDGER",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    pub delivery_ledger: bool,
+
+    /// Delivered spans the ledger remembers before evicting the oldest
+    #[arg(long, env = "BRAIN_DELIVERY_ENTRIES", default_value_t = 512)]
+    pub delivery_entries: usize,
+
+    /// Bytes of delivered text the ledger may keep for pointers and diffs
+    #[arg(long, env = "BRAIN_DELIVERY_MAX_BYTES", default_value_t = 8_388_608)]
+    pub delivery_max_bytes: usize,
+
     /// Kill a brain_exec run after this many seconds and return what it captured
     #[arg(long, env = "BRAIN_EXEC_TIMEOUT_SECS", default_value_t = 300)]
     pub exec_timeout_secs: u64,
@@ -59,6 +77,14 @@ pub struct Config {
     /// Do not register brain_exec, for hosts where spawning processes is not acceptable
     #[arg(long, env = "BRAIN_EXEC_DISABLED", default_value_t = false)]
     pub exec_disabled: bool,
+
+    /// Kill a brain_shell command after this many seconds
+    #[arg(long, env = "BRAIN_SHELL_TIMEOUT_SECS", default_value_t = 120)]
+    pub shell_timeout_secs: u64,
+
+    /// Do not register brain_shell, for hosts where arbitrary commands are not acceptable
+    #[arg(long, env = "BRAIN_SHELL_DISABLED", default_value_t = false)]
+    pub shell_disabled: bool,
 }
 
 impl Config {

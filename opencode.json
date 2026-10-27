@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "brain-tools": {
+        "type": "local",
+        "command": [
+          "/home/desktop/Documents/projects/brain_tools/target/release/brain-tools",
+          "--model-path",
+          "/home/desktop/Documents/projects/brain_tools/models/vllm-d3-edge-Q8_0.gguf",
+          "--gpu-layers",
+          "33"
+        ],
+        "environment": {
+          "RUST_LOG": "info"
+        }
+      }
+    }
+  }
+}

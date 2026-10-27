@@ -391,7 +391,7 @@ impl DiffTool {
     }
 }
 
-fn is_test(node: &SymbolNode) -> bool {
+pub(crate) fn is_test(node: &SymbolNode) -> bool {
     let path = node.file_path.to_string_lossy().replace('\\', "/");
     let in_test_tree = path.contains("/tests/") || path.ends_with("/tests.rs");
     let test_file = path.ends_with("_test.rs")

@@ -119,6 +119,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brain-kernel",
+ "clap",
+ "ignore",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "brain-engine"
 version = "0.1.0"
 dependencies = [
@@ -183,6 +197,7 @@ dependencies = [
 name = "brain-search"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "brain-engine",
  "brain-kernel",
  "grep-matcher",

@@ -9,6 +9,7 @@ authors.workspace = true
 brain-kernel = { path = "../brain-kernel" }
 brain-engine = { path = "../brain-engine" }
 ignore = { workspace = true }
+blake3 = { workspace = true }
 grep-searcher = { workspace = true }
 grep-regex = { workspace = true }
 grep-matcher = { workspace = true }

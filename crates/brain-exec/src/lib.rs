@@ -11,8 +11,10 @@ pub mod parse_cargo;
 pub mod parse_libtest;
 pub mod runner;
 pub mod schema;
+pub mod shell_tool;
 
 pub use cache::SourceHashes;
 pub use exec_tool::{ExecParams, ExecTool};
 pub use runner::Kind;
 pub use schema::brain_exec_tool;
+pub use shell_tool::{ShellParams, ShellTool};

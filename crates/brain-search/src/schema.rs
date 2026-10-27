@@ -29,6 +29,11 @@ pub fn brain_search_tool() -> Tool {
                 "budget_tokens": {
                     "type": "integer",
                     "description": "Teto aproximado de tokens para a resposta; o excedente fica recuperável via brain_peek."
+                },
+                "repeat": {
+                    "type": "string",
+                    "enum": ["allow"],
+                    "description": "`allow` devolve os corpos mesmo se esta sessão já os recebeu; o padrão aponta para o que já foi entregue."
                 }
             },
             "required": ["natural_query", "keywords"]

@@ -19,16 +19,14 @@ impl GraphTraversal {
     ) -> String {
         let sections = Self::context_sections(graph, target, depth, root_dir);
         if sections.is_empty() {
-            return format!("Nenhum símbolo ou arquivo correspondente encontrado para: `{target}`.");
+            return format!(
+                "Nenhum símbolo ou arquivo correspondente encontrado para: `{target}`."
+            );
         }
         sections.iter().map(section_text).collect()
     }
 
-    pub fn impact_check(
-        graph: &ProjectCodeGraph,
-        symbol_name: &str,
-        root_dir: &Path,
-    ) -> String {
+    pub fn impact_check(graph: &ProjectCodeGraph, symbol_name: &str, root_dir: &Path) -> String {
         let sections = Self::impact_sections(graph, symbol_name, root_dir);
         if sections.is_empty() {
             return format!("Símbolo `{symbol_name}` não encontrado no índice do projeto.");
@@ -59,6 +57,13 @@ impl GraphTraversal {
                 .flat_map(|(_, indices)| indices.iter().copied())
                 .collect()
         };
+
+        // A file (or a name with several definitions) is a digest: repeating
+        // "nenhuma chamada" per symbol costs more than the file it describes.
+        // The absence is counted once in a headline instead of dropped.
+        let digest = matching_nodes.len() > 1;
+        let mut without_incoming = 0usize;
+        let mut without_outgoing = 0usize;
 
         let mut sections = Vec::new();
 
@@ -102,18 +107,28 @@ impl GraphTraversal {
                         .display();
                     incoming.push_str(&format!(
                         "- `{}:{}` -> `{}` [{:?} na linha {}]\n",
-                        caller_path, caller.start_line, caller.signature, edge.kind, edge.call_site_line
+                        caller_path,
+                        caller.start_line,
+                        caller.signature,
+                        edge.kind,
+                        edge.call_site_line
                     ));
                 }
             }
             if incoming.is_empty() {
-                incoming.push_str("- (Nenhuma chamada de entrada detectada no grafo)\n");
+                if digest {
+                    without_incoming += 1;
+                } else {
+                    incoming.push_str("- (Nenhuma chamada de entrada detectada no grafo)\n");
+                }
             }
-            sections.push(Section {
-                heading: "#### Quem chama este símbolo (Incoming Calls):".to_string(),
-                body: incoming,
-                priority: 200,
-            });
+            if !incoming.is_empty() {
+                sections.push(Section {
+                    heading: "#### Quem chama este símbolo (Incoming Calls):".to_string(),
+                    body: incoming,
+                    priority: 200,
+                });
+            }
 
             // Outgoing dependencies.
             let mut outgoing = String::new();
@@ -128,18 +143,44 @@ impl GraphTraversal {
                         .display();
                     outgoing.push_str(&format!(
                         "- `{}:{}` -> `{}` [{:?} na linha {}]\n",
-                        callee_path, callee.start_line, callee.signature, edge.kind, edge.call_site_line
+                        callee_path,
+                        callee.start_line,
+                        callee.signature,
+                        edge.kind,
+                        edge.call_site_line
                     ));
                 }
             }
             if outgoing.is_empty() {
-                outgoing.push_str("- (Nenhuma chamada externa consumida detectada)\n");
+                if digest {
+                    without_outgoing += 1;
+                } else {
+                    outgoing.push_str("- (Nenhuma chamada externa consumida detectada)\n");
+                }
             }
-            sections.push(Section {
-                heading: "#### O que este símbolo consome (Outgoing Calls & Types):".to_string(),
-                body: outgoing,
-                priority: 150,
-            });
+            if !outgoing.is_empty() {
+                sections.push(Section {
+                    heading: "#### O que este símbolo consome (Outgoing Calls & Types):"
+                        .to_string(),
+                    body: outgoing,
+                    priority: 150,
+                });
+            }
+        }
+
+        if digest && (without_incoming > 0 || without_outgoing > 0) {
+            sections.insert(
+                0,
+                Section {
+                    heading: format!(
+                        "### {} símbolos — {without_incoming} sem chamadas de entrada, {without_outgoing} sem consumo externo",
+                        matching_nodes.len()
+                    ),
+                    body: "> Seções vazias omitidas; a contagem acima é a declaração da ausência.\n"
+                        .to_string(),
+                    priority: 255,
+                },
+            );
         }
 
         sections
@@ -260,7 +301,6 @@ fn section_text(section: &Section) -> String {
     format!("{}\n{}\n", section.heading, section.body)
 }
 
-
 #[cfg(test)]
 mod budget_tests {
     use super::*;
@@ -281,14 +321,127 @@ mod budget_tests {
         .unwrap();
         let graph = graph_of(dir.path());
 
-        let sections =
-            GraphTraversal::context_sections(&graph, "verify_token", 1, dir.path());
+        let sections = GraphTraversal::context_sections(&graph, "verify_token", 1, dir.path());
 
         assert!(!sections.is_empty());
         assert_eq!(sections[0].priority, 255, "centre node must lead");
         let incoming = sections.iter().find(|s| s.heading.contains("Incoming"));
         let outgoing = sections.iter().find(|s| s.heading.contains("Outgoing"));
         assert!(incoming.unwrap().priority > outgoing.unwrap().priority);
+    }
+
+    #[test]
+    fn a_call_matched_by_two_query_patterns_yields_one_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            "pub fn render() {}\npub fn caller() { crate::render(); }\n",
+        )
+        .unwrap();
+        let graph = graph_of(dir.path());
+
+        let sections = GraphTraversal::context_sections(&graph, "caller", 1, dir.path());
+        let outgoing = sections
+            .iter()
+            .find(|s| s.heading.contains("Outgoing"))
+            .expect("caller consumes render");
+        let edges: Vec<_> = outgoing
+            .body
+            .lines()
+            .filter(|line| line.starts_with("- `"))
+            .collect();
+        assert_eq!(
+            edges.len(),
+            1,
+            "uma chamada é uma aresta, não uma por padrão de query: {:?}",
+            outgoing.body
+        );
+    }
+
+    #[test]
+    fn two_call_sites_of_the_same_function_are_two_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            "pub fn f() {}\npub fn caller() { f(); f(); }\n",
+        )
+        .unwrap();
+        let graph = graph_of(dir.path());
+
+        let sections = GraphTraversal::context_sections(&graph, "caller", 1, dir.path());
+        let outgoing = sections
+            .iter()
+            .find(|s| s.heading.contains("Outgoing"))
+            .expect("caller consumes f");
+        let edges = outgoing
+            .body
+            .lines()
+            .filter(|line| line.starts_with("- `"))
+            .count();
+        assert_eq!(
+            edges, 2,
+            "merging must be per call site, not per callee: {:?}",
+            outgoing.body
+        );
+    }
+
+    #[test]
+    fn a_file_target_declares_the_empty_sections_once_instead_of_per_symbol() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            "pub struct P;\npub fn f() {}\npub fn g() { f(); }\n",
+        )
+        .unwrap();
+        let graph = graph_of(dir.path());
+
+        let sections = GraphTraversal::context_sections(&graph, "a.rs", 1, dir.path());
+        let headline = &sections[0];
+        assert_eq!(headline.priority, 255);
+        assert!(
+            headline.heading.contains("2 sem chamadas de entrada"),
+            "{:?}",
+            headline.heading
+        );
+        assert_eq!(
+            sections
+                .iter()
+                .filter(|s| s.heading.contains("Incoming"))
+                .count(),
+            1,
+            "only `f` has a caller"
+        );
+        assert_eq!(
+            sections
+                .iter()
+                .filter(|s| s.heading.contains("Outgoing"))
+                .count(),
+            1,
+            "only `g` consumes something"
+        );
+        assert!(
+            !sections.iter().any(|s| s.body.contains("Nenhuma chamada")),
+            "the absence is counted in the headline, not repeated per symbol"
+        );
+    }
+
+    #[test]
+    fn a_single_target_still_states_the_absence_explicitly() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            "pub fn f() {}\npub fn g() { f(); }\n",
+        )
+        .unwrap();
+        let graph = graph_of(dir.path());
+
+        let sections = GraphTraversal::context_sections(&graph, "g", 1, dir.path());
+        assert!(
+            sections
+                .iter()
+                .any(|s| s.body.contains("Nenhuma chamada de entrada detectada")),
+            "answering about one symbol must say there is no caller"
+        );
     }
 
     #[test]

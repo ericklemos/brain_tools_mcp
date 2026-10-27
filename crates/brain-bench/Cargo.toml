@@ -1,0 +1,22 @@
+[package]
+name = "brain-bench"
+description = "Token-economy benchmark: replays fixed MCP tasks and compares delivered tokens with a full Read"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "brain-bench"
+path = "src/main.rs"
+
+[dependencies]
+brain-kernel = { path = "../brain-kernel" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+ignore = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
