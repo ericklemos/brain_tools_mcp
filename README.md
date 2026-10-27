@@ -37,6 +37,7 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
 
 5. **`brain_shell` (Shell Explícito):**
    - Executa um comando em `bash -lc` com cwd no root e devolve stdout, stderr e código de saída, dentro do mesmo contrato de orçamento.
+   - Grava metadados de uso em `.brain/shell-usage.jsonl` (comando redigido, exit code, duração); `--shell-usage-log false` desliga e `--shell-usage-log-full` inclui o comando cru e os primeiros 200 chars de stdout/stderr.
    - Substitui o `shell` nativo para git, formatadores e ferramentas que o enum do `brain_exec` não cobre. Não é um sandbox: `--shell-disabled` remove a ferramenta.
 
 6. **`brain_peek` (Recuperação de Resposta Truncada):**
@@ -191,11 +192,16 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 | `--exec-disabled` | `false` | Não registra `brain_exec`, para hosts onde spawn de processo não é aceitável. |
 | `--shell-timeout-secs` | `120` | Mata um comando do `brain_shell` após N segundos. |
 | `--shell-disabled` | `false` | Não registra `brain_shell`; use quando "somente leitura" precisa ser garantia, não comportamento. |
+| `--shell-usage-log` | `true` | Grava metadados de uso do `brain_shell` em JSONL local (comando redigido); `false` desliga. |
+| `--shell-usage-log-path` | `.brain/shell-usage.jsonl` | Caminho do log, relativo ao `--root-dir`. |
+| `--shell-usage-log-full` | `false` | Inclui o comando cru e os primeiros 200 chars de stdout/stderr; use com cuidado. |
 | `--log-level` | `info` | Filtro de log (sempre em `stderr`, nunca no stdout do protocolo). |
 | `--threads`, `-t` | — | Threads de CPU para busca e inferência. |
 
 Todas aceitam variável de ambiente equivalente (`BRAIN_ROOT_DIR`, `BRAIN_GPU_LAYERS`,
 `BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `BRAIN_BUDGET_TOKENS`, `BRAIN_TOOLS`, `RUST_LOG`).
+As opções do log de uso também têm variáveis próprias: `BRAIN_SHELL_USAGE_LOG`,
+`BRAIN_SHELL_USAGE_LOG_PATH` e `BRAIN_SHELL_USAGE_LOG_FULL`.
 Rode `brain-tools --help` para a lista exata do binário instalado.
 
 ### Perfis de ferramentas (`--tools`)
@@ -551,6 +557,28 @@ quando o fator fica abaixo de `1,0x`, que é o servidor custando **mais** que
 abrir o arquivo. O `tools/list` é medido à parte porque é pago a cada
 requisição. Regras, opções e como adicionar tarefas em
 👉 [**docs/bench.md**](docs/bench.md).
+
+---
+
+## 📊 Analisando o uso do `brain_shell`
+
+Com `--shell-usage-log` ligado (padrão), cada chamada grava uma linha JSON em
+`.brain/shell-usage.jsonl`: comando redigido, `program`, `status`, `exit_code`,
+duração e tamanhos de stdout/stderr. O arquivo é local, fica fora do git e é
+gravado em modo `0600`; ao passar de 10 MB ele rotaciona para
+`.brain/shell-usage.jsonl.1`. O comando bruto e os heads de saída só entram com
+`--shell-usage-log-full`.
+
+```bash
+./scripts/shell-usage-report.sh            # usa .brain/shell-usage.jsonl
+./scripts/shell-usage-report.sh /caminho   # ou um log específico
+```
+
+O relatório requer `jq`.
+
+O relatório mostra programas e comandos mais frequentes, falhas e os comandos
+mais lentos — o dado que justifica (ou não) uma ferramenta dedicada como
+`brain_git` ou `brain_cargo`.
 
 ---
 

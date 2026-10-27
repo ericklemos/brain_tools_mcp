@@ -11,7 +11,7 @@ use brain_graph::read_tool::ReadTool;
 use brain_graph::trace_tool::TraceTool;
 use brain_graph::watcher::GraphWatcher;
 use brain_engine::ValidationClient;
-use brain_exec::{ExecTool, ShellTool};
+use brain_exec::{ExecTool, ShellTool, ShellUsageLog};
 use brain_kernel::deliveries::DeliveryLedger;
 use brain_kernel::ledger_tool::LedgerTool;
 use brain_kernel::peek_tool::PeekTool;
@@ -69,6 +69,23 @@ async fn main() -> anyhow::Result<()> {
             config.delivery_max_bytes,
         ))
     });
+    // Usage telemetry for brain_shell: metadata by default, raw command and
+    // output heads only with --shell-usage-log-full. Never fails a command.
+    let shell_usage_log = (config.shell_usage_log && !config.shell_disabled).then(|| {
+        let path = if config.shell_usage_log_path.is_absolute() {
+            config.shell_usage_log_path.clone()
+        } else {
+            config.root_dir.join(&config.shell_usage_log_path)
+        };
+        Arc::new(ShellUsageLog::new(path, config.shell_usage_log_full))
+    });
+    if let Some(ref log) = shell_usage_log {
+        tracing::info!(
+            path = %log.path().display(),
+            full = log.full(),
+            "brain_shell usage log enabled"
+        );
+    }
     let search_handler = Arc::new(
         SearchHandler::new(
             &config.root_dir,
@@ -133,12 +150,15 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("brain_shell disabled by configuration");
     } else {
         registry
-            .register(Arc::new(ShellTool::new(
-                &config.root_dir,
-                store.clone(),
-                config.default_budget_tokens,
-                Duration::from_secs(config.shell_timeout_secs),
-            )))
+            .register(Arc::new(
+                ShellTool::new(
+                    &config.root_dir,
+                    store.clone(),
+                    config.default_budget_tokens,
+                    Duration::from_secs(config.shell_timeout_secs),
+                )
+                .with_usage_log(shell_usage_log.clone()),
+            ))
             .map_err(|e| anyhow::anyhow!(e))?;
     }
 

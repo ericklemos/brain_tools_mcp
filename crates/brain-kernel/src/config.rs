@@ -131,6 +131,27 @@ pub struct Config {
     /// Do not register brain_shell, for hosts where arbitrary commands are not acceptable
     #[arg(long, env = "BRAIN_SHELL_DISABLED", default_value_t = false)]
     pub shell_disabled: bool,
+
+    /// Write brain_shell usage metadata to a local JSONL file (`false` disables)
+    #[arg(
+        long,
+        env = "BRAIN_SHELL_USAGE_LOG",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    pub shell_usage_log: bool,
+
+    /// Path of the brain_shell usage log, relative to --root-dir
+    #[arg(
+        long,
+        env = "BRAIN_SHELL_USAGE_LOG_PATH",
+        default_value = ".brain/shell-usage.jsonl"
+    )]
+    pub shell_usage_log_path: PathBuf,
+
+    /// Include the raw command and the first 200 chars of stdout/stderr in the log
+    #[arg(long, env = "BRAIN_SHELL_USAGE_LOG_FULL")]
+    pub shell_usage_log_full: bool,
 }
 
 impl Config {

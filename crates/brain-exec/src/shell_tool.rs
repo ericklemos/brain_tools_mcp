@@ -1,3 +1,4 @@
+use crate::usage_log::{now_millis, ShellUsageEntry, ShellUsageLog};
 use brain_kernel::budget::{self, Section};
 use brain_kernel::plugin::ToolPlugin;
 use brain_kernel::protocol::{CallToolResult, Tool};
@@ -22,6 +23,7 @@ pub struct ShellTool {
     timeout: Duration,
     store: Arc<ResponseStore>,
     default_budget_tokens: usize,
+    usage_log: Option<Arc<ShellUsageLog>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,11 +45,30 @@ impl ShellTool {
             timeout,
             store,
             default_budget_tokens,
+            usage_log: None,
         }
+    }
+
+    /// Attaches a local usage log. Without it, `brain_shell` keeps no trace.
+    pub fn with_usage_log(mut self, usage_log: Option<Arc<ShellUsageLog>>) -> Self {
+        self.usage_log = usage_log;
+        self
     }
 
     pub async fn run(&self, params: ShellParams) -> CallToolResult {
         if params.command.trim().is_empty() {
+            self.write_usage(self.usage_entry(
+                &params,
+                "error",
+                None,
+                false,
+                Duration::ZERO,
+                self.timeout,
+                "",
+                "",
+                Some("Comando vazio.".to_string()),
+            ))
+            .await;
             return CallToolResult::error("Comando vazio.");
         }
         let timeout = params
@@ -67,7 +88,20 @@ impl ShellTool {
         {
             Ok(child) => child,
             Err(e) => {
-                return CallToolResult::error(format!("Falha ao iniciar o shell: {e}"))
+                let message = format!("Falha ao iniciar o shell: {e}");
+                self.write_usage(self.usage_entry(
+                    &params,
+                    "error",
+                    None,
+                    false,
+                    started.elapsed(),
+                    timeout,
+                    "",
+                    "",
+                    Some(message.clone()),
+                ))
+                .await;
+                return CallToolResult::error(message);
             }
         };
 
@@ -96,11 +130,22 @@ impl ShellTool {
         let stderr = String::from_utf8_lossy(&read_err.await.unwrap_or_default()).into_owned();
         let elapsed = started.elapsed();
 
+        let status = if timed_out {
+            "timeout"
+        } else if exit_code == Some(0) {
+            "ok"
+        } else if exit_code.is_none() {
+            "signaled"
+        } else {
+            "exit_nonzero"
+        };
+        self.write_usage(self.usage_entry(
+            &params, status, exit_code, timed_out, elapsed, timeout, &stdout, &stderr, None,
+        ))
+        .await;
+
         let headline = if timed_out {
-            format!(
-                "### shell — tempo esgotado após {}s\n",
-                timeout.as_secs()
-            )
+            format!("### shell — tempo esgotado após {}s\n", timeout.as_secs())
         } else {
             format!(
                 "### shell — exit {} ({:.2}s)\n",
@@ -140,6 +185,69 @@ impl ShellTool {
         };
         CallToolResult::text(budget::render(&selection, handle.as_deref()))
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn usage_entry(
+        &self,
+        params: &ShellParams,
+        status: &str,
+        exit_code: Option<i32>,
+        timed_out: bool,
+        duration: Duration,
+        timeout: Duration,
+        stdout: &str,
+        stderr: &str,
+        error: Option<String>,
+    ) -> ShellUsageEntry {
+        let full = self.usage_log.as_ref().is_some_and(|log| log.full());
+        ShellUsageEntry {
+            ts_ms: now_millis(),
+            pid: std::process::id(),
+            cwd: self.root_dir.display().to_string(),
+            command: ShellUsageLog::redact(&params.command),
+            command_raw: full.then(|| params.command.clone()),
+            program: first_word(&params.command),
+            status: status.to_string(),
+            exit_code,
+            timed_out,
+            duration_ms: duration.as_millis() as u64,
+            timeout_secs: timeout.as_secs(),
+            stdout_bytes: stdout.len() as u64,
+            stderr_bytes: stderr.len() as u64,
+            stdout_head: full.then(|| head(stdout, 200)),
+            stderr_head: full.then(|| head(stderr, 200)),
+            error,
+        }
+    }
+
+    async fn write_usage(&self, entry: ShellUsageEntry) {
+        let Some(log) = &self.usage_log else {
+            return;
+        };
+        let log = log.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = log.record(&entry) {
+                tracing::warn!(
+                    error = %e,
+                    path = %log.path().display(),
+                    "failed to write brain_shell usage log"
+                );
+            }
+        })
+        .await;
+    }
+}
+
+fn first_word(command: &str) -> String {
+    command.split_whitespace().next().unwrap_or("").to_string()
+}
+
+fn head(text: &str, max_chars: usize) -> String {
+    let mut out: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
 }
 
 /// Keeps a runaway command from filling memory before the budget is applied.
@@ -248,5 +356,63 @@ mod tests {
             })
             .await;
         assert_eq!(out.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn writes_a_usage_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(ShellUsageLog::new(dir.path().join("usage.jsonl"), false));
+        let tool = ShellTool::new(
+            dir.path(),
+            Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024)),
+            2000,
+            Duration::from_secs(5),
+        )
+        .with_usage_log(Some(log.clone()));
+
+        let out = tool
+            .run(ShellParams {
+                command: "echo hello".into(),
+                timeout_secs: None,
+                budget_tokens: None,
+            })
+            .await;
+        assert_eq!(out.is_error, None);
+
+        let content = std::fs::read_to_string(log.path()).unwrap();
+        let entry: ShellUsageEntry = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry.command, "echo hello");
+        assert_eq!(entry.program, "echo");
+        assert_eq!(entry.status, "ok");
+        assert_eq!(entry.exit_code, Some(0));
+        assert!(entry.stdout_bytes > 0);
+        assert!(entry.command_raw.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_spawn_failure_is_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(ShellUsageLog::new(dir.path().join("usage.jsonl"), false));
+        let tool = ShellTool::new(
+            dir.path().join("missing"),
+            Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024)),
+            2000,
+            Duration::from_secs(5),
+        )
+        .with_usage_log(Some(log.clone()));
+
+        let out = tool
+            .run(ShellParams {
+                command: "echo hello".into(),
+                timeout_secs: None,
+                budget_tokens: None,
+            })
+            .await;
+        assert_eq!(out.is_error, Some(true));
+
+        let content = std::fs::read_to_string(log.path()).unwrap();
+        let entry: ShellUsageEntry = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry.status, "error");
+        assert!(entry.error.unwrap().contains("Falha ao iniciar"));
     }
 }

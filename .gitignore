@@ -3,3 +3,5 @@
 **/*.tmp
 .idea
 .claude/worktrees/
+.brain/shell-usage.jsonl
+.brain/shell-usage.jsonl.*
