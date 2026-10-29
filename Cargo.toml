@@ -6,7 +6,6 @@ members = [
     "crates/brain-graph",
     "crates/brain-exec",
     "crates/brain-web",
-    "crates/brain-engine",
     "crates/brain-tools",
     "crates/brain-bench",
 ]
@@ -60,8 +59,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 scraper = "0.29"
 dom_smoothie = "0.19"
 
-# Local LLM Inference Engine (GGUF)
-llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common"] }
-
 # Dev
 tempfile = "3.10"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -56,13 +56,17 @@ impl GraphHandler {
         };
 
         let depth = params.depth.unwrap_or(1);
-        let lock = self.graph.read().await;
-        let sections = GraphTraversal::context_sections(
-            &lock,
-            &params.target_symbol_or_file,
-            depth,
-            &self.root_dir,
-        );
+        // Sections own their strings: drop the read lock before rendering so
+        // the watcher's writer is not blocked by formatting.
+        let sections = {
+            let lock = self.graph.read().await;
+            GraphTraversal::context_sections(
+                &lock,
+                &params.target_symbol_or_file,
+                depth,
+                &self.root_dir,
+            )
+        };
         if sections.is_empty() {
             return CallToolResult::text(format!(
                 "Nenhum símbolo ou arquivo correspondente encontrado para: `{}`.",

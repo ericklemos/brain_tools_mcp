@@ -1,7 +1,7 @@
 //! Compatibility facade over the microkernel workspace.
 //!
 //! The library used to be one crate with six modules. The code now lives in
-//! `brain-kernel`, `brain-search`, `brain-graph` and `brain-engine`; the paths
+//! `brain-kernel`, `brain-search`, `brain-graph` and `brain-exec`; the paths
 //! below re-export it so existing callers and the integration tests keep
 //! compiling unchanged.
 
@@ -10,12 +10,12 @@ pub use brain_kernel::{error, BrainError, Config, Result, ToolProfile};
 mod mcp_server;
 
 pub mod mcp {
-    pub use brain_kernel::protocol;
     pub use brain_kernel::plugin::{EmptyDispatcher, Registry, ToolDispatcher, ToolPlugin};
+    pub use brain_kernel::protocol;
 
     pub mod server {
-        pub use brain_kernel::plugin::{EmptyDispatcher, ToolDispatcher};
         pub use crate::mcp_server::{BrainToolDispatcher, McpServer};
+        pub use brain_kernel::plugin::{EmptyDispatcher, ToolDispatcher};
     }
 
     pub mod handlers {
@@ -38,9 +38,9 @@ pub mod graph {
     pub use brain_graph::{builder, model, queries, traversal, watcher};
 }
 
+/// Compatibility path for the pre-lexical engine module.
 pub mod engine {
-    pub use brain_engine::{actor, llama_validator, prompt};
-    pub use brain_engine::{LlamaValidator, PromptBuilder, ValidationClient, ValidationJob};
+    pub use brain_search::validator::{ValidationClient, ValidationOutcome};
 }
 
 /// Adapter wiring the code graph's hashes into `brain_exec`'s cache.

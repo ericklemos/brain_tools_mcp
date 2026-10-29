@@ -3,7 +3,8 @@ use brain_kernel::protocol::Tool;
 pub fn brain_search_tool() -> Tool {
     Tool {
         name: "brain_search".to_string(),
-        description: "Busca cirúrgica (léxica + AST) devolve corpos verbatim; trate como já lido.".to_string(),
+        description: "Busca cirúrgica (léxica + AST) devolve corpos verbatim; trate como já lido."
+            .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

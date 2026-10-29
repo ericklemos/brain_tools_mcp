@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[tokio::test]
 async fn test_validation_actor_runs_fallback_without_model() {
     // Pass None as model path -> should gracefully use LexicalRanker in the actor thread
-    let client = ValidationClient::new(None, 0);
+    let client = ValidationClient::new();
 
     let s1 = AstSnippet {
         file_path: PathBuf::from("src/jwt.rs"),

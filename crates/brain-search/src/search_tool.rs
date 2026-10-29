@@ -1,4 +1,4 @@
-use brain_engine::ValidationClient;
+use crate::validator::ValidationClient;
 use brain_kernel::ast::AstChunker;
 use brain_kernel::plugin::ToolPlugin;
 use brain_kernel::protocol::{CallToolResult, Tool};
@@ -128,7 +128,7 @@ impl SearchHandler {
     /// Handler for unit tests: no GGUF, so `ValidationClient` falls back to
     /// lexical ranking and the test needs no GPU.
     pub fn for_test() -> Self {
-        Self::new(".", ValidationClient::new(None, 0), 5, 0.65)
+        Self::new(".", ValidationClient::new(), 5, 0.65)
     }
 
     pub async fn handle_brain_search(&self, arguments: serde_json::Value) -> CallToolResult {
@@ -644,7 +644,7 @@ mod tests {
             fs::write(src.join(format!("{name}.rs")), body).unwrap();
         }
 
-        let validator = ValidationClient::new(None, 0);
+        let validator = ValidationClient::new();
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
         let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store.clone(), 200);
 
@@ -688,7 +688,7 @@ mod tests {
             .unwrap();
         }
 
-        let validator = ValidationClient::new(None, 0);
+        let validator = ValidationClient::new();
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
         let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
 
@@ -748,7 +748,7 @@ mod tests {
         )
         .unwrap();
 
-        let validator = ValidationClient::new(None, 0);
+        let validator = ValidationClient::new();
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
         let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
 
@@ -791,7 +791,7 @@ mod tests {
             .unwrap();
         }
 
-        let validator = ValidationClient::new(None, 0);
+        let validator = ValidationClient::new();
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
         let handler = SearchHandler::new(root, validator, 2, 0.0).with_budget(store, 100_000);
 
@@ -821,7 +821,7 @@ mod tests {
         )
         .unwrap();
 
-        let validator = ValidationClient::new(None, 0);
+        let validator = ValidationClient::new();
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
         let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
 
@@ -872,7 +872,7 @@ mod tests {
         root: &std::path::Path,
         ledger: Arc<DeliveryLedger>,
     ) -> (SearchHandler, Arc<ResponseStore>) {
-        let validator = ValidationClient::new(None, 0);
+        let validator = ValidationClient::new();
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
         let handler = SearchHandler::new(root, validator, 5, 0.0)
             .with_budget(store.clone(), 4000)
@@ -980,14 +980,16 @@ mod tests {
         let body: Vec<String> = (0..120).map(|i| format!("    let v{i} = {i};")).collect();
         fs::write(
             dir.path().join("long.rs"),
-            format!("pub fn long_handler() -> u32 {{\n{}\n    0\n}}\n", body.join("\n")),
+            format!(
+                "pub fn long_handler() -> u32 {{\n{}\n    0\n}}\n",
+                body.join("\n")
+            ),
         )
         .unwrap();
 
-        let validator = ValidationClient::new(None, 0);
+        let validator = ValidationClient::new();
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
-        let handler =
-            SearchHandler::new(dir.path(), validator, 5, 0.0).with_budget(store, 100_000);
+        let handler = SearchHandler::new(dir.path(), validator, 5, 0.0).with_budget(store, 100_000);
         let out = handler
             .handle_brain_search(serde_json::json!({
                 "natural_query": "long handler",
@@ -1006,5 +1008,4 @@ mod tests {
             "the search cap must not pretend to be the full body: {text}"
         );
     }
-
 }

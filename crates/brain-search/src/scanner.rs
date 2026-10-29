@@ -94,13 +94,14 @@ impl LexicalScanner {
                 }
 
                 let path = entry.path();
-                let path_str = path.to_string_lossy();
-                if path_str.contains("/target/")
-                    || path_str.contains("/build/")
-                    || path_str.contains("/.gradle/")
-                    || path_str.contains("/node_modules/")
-                    || path_str.contains("/.git/")
-                {
+                // Components, not a formatted string: no allocation per entry.
+                let excluded = path.components().any(|component| {
+                    matches!(
+                        component.as_os_str().to_str(),
+                        Some("target" | "build" | ".gradle" | "node_modules" | ".git")
+                    )
+                });
+                if excluded {
                     return ignore::WalkState::Continue;
                 }
 

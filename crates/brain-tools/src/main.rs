@@ -1,4 +1,3 @@
-use brain_engine::ValidationClient;
 use brain_exec::{ExecTool, ShellTool, ShellUsageLog};
 use brain_graph::assert_tool::AssertTool;
 use brain_graph::builder::GraphBuilder;
@@ -17,6 +16,7 @@ use brain_kernel::ledger_tool::LedgerTool;
 use brain_kernel::peek_tool::PeekTool;
 use brain_kernel::store::ResponseStore;
 use brain_kernel::{Config, Registry};
+use brain_search::validator::ValidationClient;
 use brain_search::SearchHandler;
 use brain_tools::graph_sources::sources_from;
 use brain_tools::mcp::server::McpServer;
@@ -50,15 +50,8 @@ async fn main() -> anyhow::Result<()> {
         "Starting brain-tools MCP server daemon"
     );
 
-    let resolved_model = config.resolved_model_path();
-    if let Some(ref model_path) = resolved_model {
-        tracing::info!(model_path = %model_path.display(), "Using GGUF model for validation");
-    } else {
-        tracing::warn!("No GGUF model configured or found; operating in lexical/AST fallback mode");
-    }
-
-    let validator = ValidationClient::new(resolved_model, config.gpu_layers)
-        .with_max_candidates(config.max_validate_candidates);
+    // Ranking is lexical now: no model to load, no GPU to configure.
+    let validator = ValidationClient::new().with_max_candidates(config.max_validate_candidates);
     let store = Arc::new(ResponseStore::new(
         Duration::from_secs(config.handle_ttl_secs),
         config.handle_max_bytes,

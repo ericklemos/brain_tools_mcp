@@ -129,9 +129,9 @@ impl ScopeResolver {
         if let Some(root) = crate_root_of(&module) {
             // Both spellings: the manifest key uses hyphens, the `use` path uses
             // underscores (`brain_kernel::plugin`).
-            self.crate_roots.insert(crate_name.to_string(), root.clone());
             self.crate_roots
-                .insert(crate_name.replace('-', "_"), root);
+                .insert(crate_name.to_string(), root.clone());
+            self.crate_roots.insert(crate_name.replace('-', "_"), root);
             if let Some(prefix) = crate_prefix_of(relative) {
                 self.crate_prefixes.insert(crate_name.to_string(), prefix);
             }
@@ -196,12 +196,7 @@ impl ScopeResolver {
     /// module, a workspace member, an external crate, and paths ending in an
     /// item (`crate::a::b::Item`): the longest prefix naming a registered file
     /// wins.
-    pub fn resolve_import_in(
-        &self,
-        file: &Path,
-        module: &str,
-        path: &str,
-    ) -> Option<ImportTarget> {
+    pub fn resolve_import_in(&self, file: &Path, module: &str, path: &str) -> Option<ImportTarget> {
         let segments = split_path(path);
         if segments.is_empty() {
             return None;
@@ -318,14 +313,9 @@ pub fn pick_target(
                     Some(node) => Resolution::Resolved(node),
                     // The import names a module rather than the defining file;
                     // the remaining rules can still place it.
-                    None => resolve_within(
-                        caller_file,
-                        scope,
-                        resolver,
-                        call_path,
-                        definitions,
-                        graph,
-                    ),
+                    None => {
+                        resolve_within(caller_file, scope, resolver, call_path, definitions, graph)
+                    }
                 }
             }
         };
@@ -411,23 +401,10 @@ fn resolve_within(
 
 /// The type named at the end of a path (`crate::a::Thing` → `Thing`).
 pub fn last_segment(path: &str) -> Option<&str> {
-    path.rsplit("::").next().map(str::trim).filter(|s| !s.is_empty())
-}
-
-/// The single node matching `pred`, or `None` when zero or several match.
-fn unique_in(
-    definitions: &[(PathBuf, NodeIndex)],
-    pred: impl Fn(&Path) -> bool,
-) -> Option<NodeIndex> {
-    let matches: Vec<NodeIndex> = definitions
-        .iter()
-        .filter(|(file, _)| pred(file))
-        .map(|(_, node)| *node)
-        .collect();
-    match matches.as_slice() {
-        [only] => Some(*only),
-        _ => None,
-    }
+    path.rsplit("::")
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 /// `src/graph/builder.rs` → `src/graph/builder`; `src/lib.rs` → `src/lib`.
@@ -618,6 +595,53 @@ fn split_top_level_commas(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ProjectCodeGraph, SymbolKind, SymbolNode};
+
+    /// The tests state definitions as `(file, index)`; rebuild the minimum
+    /// graph those literal indices refer to.
+    fn pick(
+        call_name: &str,
+        caller_file: &Path,
+        scope: &FileScope,
+        resolver: &ScopeResolver,
+        call_path: Option<&str>,
+        definitions: &[(PathBuf, NodeIndex)],
+    ) -> Resolution {
+        let mut graph = ProjectCodeGraph::new();
+        let max = definitions
+            .iter()
+            .map(|(_, index)| index.index())
+            .max()
+            .unwrap_or(0);
+        while graph.graph.node_count() <= max {
+            graph.graph.add_node(SymbolNode {
+                qualified_name: String::new(),
+                name: String::new(),
+                kind: SymbolKind::Function,
+                file_path: PathBuf::new(),
+                start_line: 0,
+                end_line: 0,
+                signature: String::new(),
+                container: None,
+                is_test: false,
+            });
+        }
+        for (path, index) in definitions {
+            if let Some(node) = graph.graph.node_weight_mut(*index) {
+                node.file_path = path.clone();
+            }
+        }
+        let indices: Vec<NodeIndex> = definitions.iter().map(|(_, index)| *index).collect();
+        pick_target(
+            call_name,
+            caller_file,
+            scope,
+            resolver,
+            call_path,
+            &indices,
+            &graph,
+        )
+    }
 
     fn resolver() -> ScopeResolver {
         let mut r = ScopeResolver::new();
@@ -648,8 +672,13 @@ mod tests {
     fn a_crate_relative_use_resolves_to_the_file() {
         let r = resolver();
         assert_eq!(
-            r.resolve_import(Path::new("crates/brain-graph/src/scope.rs"), "crate::builder"),
-            Some(ImportTarget::File(file("crates/brain-graph/src/builder.rs")))
+            r.resolve_import(
+                Path::new("crates/brain-graph/src/scope.rs"),
+                "crate::builder"
+            ),
+            Some(ImportTarget::File(file(
+                "crates/brain-graph/src/builder.rs"
+            )))
         );
     }
 
@@ -661,7 +690,9 @@ mod tests {
                 Path::new("crates/brain-graph/src/scope.rs"),
                 "crate::builder::GraphBuilder"
             ),
-            Some(ImportTarget::File(file("crates/brain-graph/src/builder.rs")))
+            Some(ImportTarget::File(file(
+                "crates/brain-graph/src/builder.rs"
+            )))
         );
     }
 
@@ -669,8 +700,13 @@ mod tests {
     fn super_resolves_to_the_parent_module() {
         let r = resolver();
         assert_eq!(
-            r.resolve_import(Path::new("crates/brain-graph/src/scope.rs"), "super::builder"),
-            Some(ImportTarget::File(file("crates/brain-graph/src/builder.rs")))
+            r.resolve_import(
+                Path::new("crates/brain-graph/src/scope.rs"),
+                "super::builder"
+            ),
+            Some(ImportTarget::File(file(
+                "crates/brain-graph/src/builder.rs"
+            )))
         );
     }
 
@@ -686,7 +722,9 @@ mod tests {
                 module,
                 "super::build_graph"
             ),
-            Some(ImportTarget::File(file("crates/brain-graph/src/builder.rs")))
+            Some(ImportTarget::File(file(
+                "crates/brain-graph/src/builder.rs"
+            )))
         );
     }
 
@@ -706,8 +744,13 @@ mod tests {
     fn a_mod_rs_answers_to_its_directory() {
         let r = resolver();
         assert_eq!(
-            r.resolve_import(Path::new("crates/brain-graph/src/builder.rs"), "crate::graph"),
-            Some(ImportTarget::File(file("crates/brain-graph/src/graph/mod.rs")))
+            r.resolve_import(
+                Path::new("crates/brain-graph/src/builder.rs"),
+                "crate::graph"
+            ),
+            Some(ImportTarget::File(file(
+                "crates/brain-graph/src/graph/mod.rs"
+            )))
         );
     }
 
@@ -715,7 +758,10 @@ mod tests {
     fn an_external_crate_is_marked_external_and_never_becomes_an_edge() {
         let r = resolver();
         assert_eq!(
-            r.resolve_import(Path::new("crates/brain-graph/src/scope.rs"), "std::collections"),
+            r.resolve_import(
+                Path::new("crates/brain-graph/src/scope.rs"),
+                "std::collections"
+            ),
             Some(ImportTarget::External)
         );
     }
@@ -731,7 +777,9 @@ mod tests {
                 Path::new("crates/brain-graph/src/scope.rs"),
                 "brain_kernel::plugin::Registry"
             ),
-            Some(ImportTarget::File(file("crates/brain-kernel/src/plugin.rs")))
+            Some(ImportTarget::File(file(
+                "crates/brain-kernel/src/plugin.rs"
+            )))
         );
         assert_eq!(
             r.resolve_import(
@@ -758,8 +806,11 @@ mod tests {
         let mut r = resolver();
         r.unregister_file(Path::new("crates/brain-graph/src/scope.rs"));
         assert!(
-            r.resolve_import(Path::new("crates/brain-graph/src/builder.rs"), "crate::scope")
-                .is_none()
+            r.resolve_import(
+                Path::new("crates/brain-graph/src/builder.rs"),
+                "crate::scope"
+            )
+            .is_none()
                 || r.resolve_import(
                     Path::new("crates/brain-graph/src/builder.rs"),
                     "crate::scope"
@@ -773,8 +824,13 @@ mod tests {
         let mut r = resolver();
         r.unregister_file(Path::new("crates/brain-kernel/src/plugin.rs"));
         assert_eq!(
-            r.resolve_import(Path::new("crates/brain-graph/src/scope.rs"), "crate::builder"),
-            Some(ImportTarget::File(file("crates/brain-graph/src/builder.rs")))
+            r.resolve_import(
+                Path::new("crates/brain-graph/src/scope.rs"),
+                "crate::builder"
+            ),
+            Some(ImportTarget::File(file(
+                "crates/brain-graph/src/builder.rs"
+            )))
         );
     }
 
@@ -788,7 +844,14 @@ mod tests {
         ];
 
         assert_eq!(
-            pick_target("build_graph", &caller, &FileScope::default(), &r, None, &definitions),
+            pick(
+                "build_graph",
+                &caller,
+                &FileScope::default(),
+                &r,
+                None,
+                &definitions
+            ),
             Resolution::Resolved(idx(3))
         );
     }
@@ -808,7 +871,7 @@ mod tests {
             (file("crates/brain-graph/src/budget.rs"), idx(2)),
         ];
         assert_eq!(
-            pick_target("render", &caller, &scope, &r, None, &definitions),
+            pick("render", &caller, &scope, &r, None, &definitions),
             Resolution::Resolved(idx(2))
         );
     }
@@ -824,7 +887,14 @@ mod tests {
         ];
 
         assert_eq!(
-            pick_target("zip", &caller, &FileScope::default(), &r, None, &definitions),
+            pick(
+                "zip",
+                &caller,
+                &FileScope::default(),
+                &r,
+                None,
+                &definitions
+            ),
             Resolution::Ambiguous { candidates: 2 },
             "guessing between two definitions is what poisoned the graph"
         );
@@ -840,7 +910,14 @@ mod tests {
         ];
 
         assert_eq!(
-            pick_target("zip", &caller, &FileScope::default(), &r, None, &definitions),
+            pick(
+                "zip",
+                &caller,
+                &FileScope::default(),
+                &r,
+                None,
+                &definitions
+            ),
             Resolution::Resolved(idx(2))
         );
     }
@@ -856,7 +933,7 @@ mod tests {
         let definitions = vec![(file("crates/brain-graph/src/builder.rs"), idx(1))];
 
         assert_eq!(
-            pick_target("info", &caller, &scope, &r, None, &definitions),
+            pick("info", &caller, &scope, &r, None, &definitions),
             Resolution::Unknown,
             "`use tracing::info` means this `info!` is not the local `fn info`"
         );
@@ -867,7 +944,7 @@ mod tests {
         let r = resolver();
         let caller = file("crates/brain-graph/src/scope.rs");
         assert_eq!(
-            pick_target("println", &caller, &FileScope::default(), &r, None, &[]),
+            pick("println", &caller, &FileScope::default(), &r, None, &[]),
             Resolution::Unknown
         );
     }
@@ -879,7 +956,14 @@ mod tests {
         let definitions = vec![(file("crates/brain-kernel/src/plugin.rs"), idx(9))];
 
         assert_eq!(
-            pick_target("Registry", &caller, &FileScope::default(), &r, None, &definitions),
+            pick(
+                "Registry",
+                &caller,
+                &FileScope::default(),
+                &r,
+                None,
+                &definitions
+            ),
             Resolution::Resolved(idx(9))
         );
     }
@@ -894,7 +978,14 @@ mod tests {
         ];
 
         assert_eq!(
-            pick_target("build_graph", &caller, &FileScope::default(), &r, None, &definitions),
+            pick(
+                "build_graph",
+                &caller,
+                &FileScope::default(),
+                &r,
+                None,
+                &definitions
+            ),
             Resolution::Resolved(idx(4))
         );
     }
@@ -909,7 +1000,7 @@ mod tests {
         ];
 
         assert_eq!(
-            pick_target(
+            pick(
                 "GraphBuilder",
                 &caller,
                 &FileScope::default(),
@@ -935,7 +1026,7 @@ mod tests {
         ];
 
         assert_eq!(
-            pick_target("build_graph", &caller, &scope, &r, None, &definitions),
+            pick("build_graph", &caller, &scope, &r, None, &definitions),
             Resolution::Resolved(idx(4))
         );
     }

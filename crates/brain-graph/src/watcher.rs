@@ -1,6 +1,6 @@
-use brain_kernel::{BrainError, Result};
 use crate::builder::GraphBuilder;
 use crate::model::ProjectCodeGraph;
+use brain_kernel::{BrainError, Result};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,7 +42,6 @@ impl GraphWatcher {
             .watch(&root_dir, RecursiveMode::Recursive)
             .map_err(|e| BrainError::Graph(format!("Watch error: {e}")))?;
 
-        let root_clone = root_dir.clone();
         tokio::spawn(async move {
             while let Some(first) = rx.recv().await {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -56,16 +55,45 @@ impl GraphWatcher {
                     batch.insert(path);
                 }
 
+                // Snapshot the hashes under a short read lock, then release it:
+                // reading and tree-sitter parsing run on the blocking pool.
+                let known: Vec<(PathBuf, Option<blake3::Hash>)> = {
+                    let lock = graph.read().await;
+                    batch
+                        .iter()
+                        .map(|path| (path.clone(), lock.file_hashes.get(path).copied()))
+                        .collect()
+                };
+
+                let builder_for_parse = builder.clone();
+                let prepared = tokio::task::spawn_blocking(move || {
+                    known
+                        .into_iter()
+                        .map(|(path, hash)| {
+                            let result = builder_for_parse.prepare_update(hash, &path);
+                            (path, result)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
+
+                // Only the merge holds the write lock; readers are no longer
+                // blocked for the duration of every parse in the batch.
                 let mut lock = graph.write().await;
-                for path in batch {
-                    match builder.update_file(&mut lock, &path, &root_clone) {
-                        Ok(changed) => {
-                            if changed {
-                                tracing::info!(path = %path.display(), "Graph incrementally updated");
+                for (path, result) in prepared {
+                    match result {
+                        Ok(update) => match builder.apply_update(&mut lock, update) {
+                            Ok(true) => {
+                                tracing::info!(path = %path.display(), "Graph incrementally updated")
                             }
-                        }
+                            Ok(false) => {}
+                            Err(e) => {
+                                tracing::debug!(path = %path.display(), error = %e, "Incremental update error")
+                            }
+                        },
                         Err(e) => {
-                            tracing::debug!(path = %path.display(), error = %e, "Incremental update error");
+                            tracing::debug!(path = %path.display(), error = %e, "Incremental update error")
                         }
                     }
                 }

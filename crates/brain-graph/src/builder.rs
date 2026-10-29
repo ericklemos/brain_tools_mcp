@@ -6,13 +6,13 @@ use brain_kernel::parse_cache::{ParseCache, ParseWorker};
 use brain_kernel::{BrainError, Result};
 use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
+use petgraph::stable_graph::NodeIndex;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use streaming_iterator::StreamingIterator;
-use petgraph::stable_graph::NodeIndex;
 use tree_sitter::{Node, QueryCursor};
 
 pub struct GraphBuilder {
@@ -27,6 +27,36 @@ struct CallSite {
     line: usize,
     path: Option<String>,
     receiver: Option<String>,
+}
+
+/// One file after the read/parse pass. Kept in walk order so every later merge
+/// is deterministic.
+struct ParsedFile {
+    path: PathBuf,
+    content: String,
+    hash: blake3::Hash,
+    tree: Option<(SupportedLanguage, Arc<tree_sitter::Tree>)>,
+}
+
+/// What one file contributes to the call graph, computed without mutating it.
+#[derive(Default)]
+struct RelationsDelta {
+    edges: Vec<(NodeIndex, NodeIndex, usize)>,
+    decisions: Vec<(String, Resolution)>,
+}
+
+/// Bindings grouped by name and sorted by line, so a receiver lookup is a
+/// binary search instead of a scan of every binding in the file.
+type Bindings = HashMap<String, Vec<(usize, String)>>;
+
+/// A file update prepared outside the graph lock.
+pub struct PreparedUpdate {
+    path: PathBuf,
+    content: Option<String>,
+    hash: Option<blake3::Hash>,
+    tree: Option<(SupportedLanguage, Arc<tree_sitter::Tree>)>,
+    changed: bool,
+    removed: bool,
 }
 
 impl GraphBuilder {
@@ -85,19 +115,21 @@ impl GraphBuilder {
 
         // Pass 1: definitions. Query execution is independent per file; only
         // the merge touches the graph, in file order.
-        let definitions: Vec<Option<Result<Vec<SymbolNode>>>> =
-            parallel_map(parsed.len(), || (), |index, ()| {
-                Some(self.definitions_for(&parsed[index]))
-            });
+        let definitions: Vec<Option<Result<Vec<SymbolNode>>>> = parallel_map(
+            parsed.len(),
+            || (),
+            |index, ()| Some(self.definitions_for(&parsed[index])),
+        );
         for nodes in definitions.into_iter().flatten() {
             merge_definitions(&mut code_graph, nodes?);
         }
 
         // Pass 2: imports. The resolver is complete after pass 0.
-        let imports: Vec<Option<Result<FileScope>>> =
-            parallel_map(parsed.len(), || (), |index, ()| {
-                Some(self.imports_for(&parsed[index], &code_graph.resolver))
-            });
+        let imports: Vec<Option<Result<FileScope>>> = parallel_map(
+            parsed.len(),
+            || (),
+            |index, ()| Some(self.imports_for(&parsed[index], &code_graph.resolver)),
+        );
         for (index, scope) in imports.into_iter().enumerate() {
             if let Some(scope) = scope {
                 code_graph.scopes.insert(parsed[index].path.clone(), scope?);
@@ -106,10 +138,11 @@ impl GraphBuilder {
 
         // Pass 3: calls, now that every name has a node and a scope. Resolution
         // reads the graph; edges are collected per file and merged in order.
-        let relations: Vec<Option<Result<RelationsDelta>>> =
-            parallel_map(parsed.len(), || (), |index, ()| {
-                Some(self.relations_for(&parsed[index], &code_graph))
-            });
+        let relations: Vec<Option<Result<RelationsDelta>>> = parallel_map(
+            parsed.len(),
+            || (),
+            |index, ()| Some(self.relations_for(&parsed[index], &code_graph)),
+        );
         for delta in relations.into_iter().flatten() {
             apply_relations(&mut code_graph, delta?);
         }
@@ -214,12 +247,7 @@ impl GraphBuilder {
             .resolver
             .register_file(&prepared.path, &scope::crate_name_for(&prepared.path));
 
-        let nodes = self.collect_definitions(
-            &prepared.path,
-            &content,
-            &tree.root_node(),
-            lang,
-        )?;
+        let nodes = self.collect_definitions(&prepared.path, &content, &tree.root_node(), lang)?;
         merge_definitions(code_graph, nodes);
 
         let scope = self.collect_imports(
@@ -306,13 +334,7 @@ impl GraphBuilder {
         let Some((lang, tree)) = &file.tree else {
             return Ok(RelationsDelta::default());
         };
-        self.collect_relations(
-            &file.path,
-            &file.content,
-            &tree.root_node(),
-            *lang,
-            graph,
-        )
+        self.collect_relations(&file.path, &file.content, &tree.root_node(), *lang, graph)
     }
 
     fn collect_definitions(
@@ -380,8 +402,7 @@ impl GraphBuilder {
                 end_line: node.end_position().row + 1,
                 signature,
                 container,
-                is_test: is_test_definition(node, content.as_bytes(), lang)
-                    || is_test_file(path),
+                is_test: is_test_definition(node, content.as_bytes(), lang) || is_test_file(path),
             });
         }
 
@@ -692,6 +713,31 @@ impl GraphBuilder {
         bindings
     }
 
+    fn extract_signature(&self, node: Node, source: &[u8], lang: SupportedLanguage) -> String {
+        let text = node.utf8_text(source).unwrap_or("");
+        match lang {
+            SupportedLanguage::Rust => {
+                if let Some(body_node) = node.child_by_field_name("body") {
+                    let sig_end = body_node.start_byte().saturating_sub(node.start_byte());
+                    return text[..sig_end].trim().to_string();
+                }
+                if let Some(idx) = text.find('{') {
+                    text[..idx].trim().to_string()
+                } else {
+                    text.lines().next().unwrap_or("").trim().to_string()
+                }
+            }
+            SupportedLanguage::Kotlin => {
+                if let Some(idx) = text.find('{') {
+                    text[..idx].trim().to_string()
+                } else {
+                    text.lines().next().unwrap_or("").trim().to_string()
+                }
+            }
+        }
+    }
+}
+
 /// Whether a definition belongs to a test: `#[test]`, `#[tokio::test]`,
 /// `#[cfg(test)]`, or a `mod tests` ancestor.
 ///
@@ -791,7 +837,9 @@ fn binding_type_at(bindings: &Bindings, receiver: &str, line: usize) -> Option<S
     let entries = bindings.get(receiver)?;
     // Last binding at or before the call line.
     let position = entries.partition_point(|(bind_line, _)| *bind_line <= line);
-    position.checked_sub(1).map(|index| entries[index].1.clone())
+    position
+        .checked_sub(1)
+        .map(|index| entries[index].1.clone())
 }
 
 fn merge_definitions(graph: &mut ProjectCodeGraph, nodes: Vec<SymbolNode>) {
@@ -840,7 +888,7 @@ fn apply_relations(graph: &mut ProjectCodeGraph, delta: RelationsDelta) {
 /// context (a parser, for the read/parse pass) and claims indices from a shared
 /// queue, so one huge file cannot become the tail while others idle. Results
 /// stay at their original index, which keeps merges deterministic.
-fn parallel_map<C, T, F>(len: usize, make: impl Fn() -> C, map: F) -> Vec<Option<T>>
+fn parallel_map<C, T, F>(len: usize, make: impl Fn() -> C + Sync, map: F) -> Vec<Option<T>>
 where
     C: Send,
     T: Send,
