@@ -201,7 +201,7 @@ impl ToolPlugin for HistoryTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_why".to_string(),
-            description: "Histórico git de um símbolo: commits que tocaram suas linhas, com autor, data e assunto. Use para entender por que o código é assim sem abrir o log inteiro.".to_string(),
+            description: "Commits que tocaram um símbolo, sem abrir o log inteiro.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

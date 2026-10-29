@@ -225,12 +225,28 @@ impl AssertTool {
             return format!("NÃO — `{symbol}` não é chamada{boundary}.{caveat}");
         }
 
-        format!(
-            "SIM — `{symbol}` é chamada de fora: {} ({} local{}).",
-            call_sites.join(", "),
-            call_sites.len(),
-            if call_sites.len() == 1 { "" } else { "is" }
-        )
+        // A yes/no answer does not need every call site. Three prove the
+        // claim; the rest are a count, and brain_impact_check has the list.
+        const MAX_EVIDENCE: usize = 3;
+        let total = call_sites.len();
+        let shown: Vec<&str> = call_sites
+            .iter()
+            .take(MAX_EVIDENCE)
+            .map(String::as_str)
+            .collect();
+        if total > MAX_EVIDENCE {
+            format!(
+                "SIM — `{symbol}` é chamada de fora em {total} locais; ex.: {} (+{}; veja brain_impact_check).",
+                shown.join(", "),
+                total - MAX_EVIDENCE
+            )
+        } else {
+            format!(
+                "SIM — `{symbol}` é chamada de fora: {} ({total} local{}).",
+                shown.join(", "),
+                if total == 1 { "" } else { "is" }
+            )
+        }
     }
 }
 
@@ -265,7 +281,7 @@ impl ToolPlugin for AssertTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_assert".to_string(),
-            description: "Responde SIM/NÃO sobre o índice: o símbolo existe, é público, ou é usado fora do seu arquivo/módulo. Evita greps de confirmação.".to_string(),
+            description: "SIM/NÃO: o símbolo existe, é público ou é usado fora do arquivo/módulo.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -399,4 +415,27 @@ mod tests {
         assert_eq!(p.name(), "brain_assert");
         assert_eq!(p.schema().name, "brain_assert");
     }
+
+    #[tokio::test]
+    async fn many_call_sites_are_counted_instead_of_listed() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("core.rs"), "pub fn core_fn() {}\n").unwrap();
+        for index in 0..5 {
+            fs::write(
+                dir.path().join(format!("feature_{index}.rs")),
+                format!("pub fn caller_{index}() {{\n    core_fn();\n}}\n"),
+            )
+            .unwrap();
+        }
+        let graph = GraphBuilder::new().unwrap().build_graph(dir.path()).unwrap();
+        let text = ask(
+            &tool(&dir, Arc::new(RwLock::new(graph))),
+            serde_json::json!({ "kind": "used_outside", "symbol": "core_fn" }),
+        )
+        .await;
+
+        assert!(text.contains("em 5 locais"), "{text}");
+        assert!(text.contains("(+2"), "the tail is a count, not a list: {text}");
+    }
+
 }

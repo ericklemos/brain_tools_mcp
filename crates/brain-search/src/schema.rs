@@ -3,7 +3,7 @@ use brain_kernel::protocol::Tool;
 pub fn brain_search_tool() -> Tool {
     Tool {
         name: "brain_search".to_string(),
-        description: "FONTE DE VERDADE do código. Busca cirúrgica (léxica + AST Rust/Kotlin) devolve corpos verbatim com path:linhas; trate como já lido e não reabra com Read.".to_string(),
+        description: "Busca cirúrgica (léxica + AST) devolve corpos verbatim; trate como já lido.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

@@ -414,7 +414,7 @@ impl ToolPlugin for DiffTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_diff".to_string(),
-            description: "Analisa o diff atual: quais símbolos mudaram, quem fora dos arquivos alterados chama esses símbolos e quais testes dependem deles. Responde 'o que quebrei?' sem ler o diff inteiro.".to_string(),
+            description: "Símbolos alterados, chamadores externos e testes afetados.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

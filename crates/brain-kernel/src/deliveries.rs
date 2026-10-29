@@ -318,15 +318,12 @@ fn seen_of(entry: &Entry, file_changed: bool) -> Seen {
 /// where to recover it. A pointer without a handle would be a dead end.
 pub fn pointer_body(seen: &Seen, handle: &str) -> String {
     let mut out = format!(
-        "> **Já entregue nesta sessão** (`{}`, blake3 `{}`, {} linhas, ~{} tokens).\n",
-        seen.tool, seen.hash, seen.lines, seen.tokens
+        "> **Já entregue nesta sessão** ({} · blake3 `{}` · {} linhas) — corpo em `brain_peek` `{handle}`.\n",
+        seen.tool, seen.hash, seen.lines
     );
     if seen.file_changed {
-        out.push_str("> O arquivo mudou **fora** deste símbolo: este corpo é idêntico ao que você já recebeu.\n");
+        out.push_str("> O arquivo mudou fora deste símbolo; o corpo é o mesmo.\n");
     }
-    out.push_str(&format!(
-        "> Corpo omitido; recupere com `brain_peek` em `{handle}`.\n"
-    ));
     out
 }
 

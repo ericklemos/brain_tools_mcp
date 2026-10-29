@@ -296,7 +296,7 @@ impl ToolPlugin for ShellTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_shell".to_string(),
-            description: "Executa comando em `bash -lc` no root e devolve stdout/stderr/código. Substitui `shell` para git e formatadores; não é sandbox. Comandos cobertos por brain_search/brain_read/brain_map/brain_edit/brain_exec são recusados.".to_string(),
+            description: "Comando em `bash -lc` no root; cobre git e formatadores. Não é sandbox.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

@@ -244,7 +244,7 @@ impl ToolPlugin for LedgerTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_ledger".to_string(),
-            description: "Registra e consulta fatos e decisões duráveis do projeto (append-only em .brain/ledger.jsonl, deduplicado por conteúdo). Use para não redescobrir a mesma decisão depois.".to_string(),
+            description: "Fatos e decisões duráveis (record/list/search), sem redescobrir.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

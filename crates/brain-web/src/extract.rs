@@ -24,7 +24,15 @@ const MAX_BLOCKS: usize = 4_000;
 /// Doing the second step on the extracted article (not on the raw document) is
 /// what keeps a documentation sidebar out of the token budget.
 pub fn extract(html: &str, url: &str) -> Result<Page> {
-    let (content, mut meta) = readable(html, url);
+    let (extracted, mut meta) = readable(html, url);
+    // Readability needs enough prose to score. On very small or unusual pages
+    // it can lock onto a single stray node; falling back to the whole document
+    // lets the chrome filter decide instead.
+    let content = if extracted.len() < 512 && html.len() > extracted.len() * 2 {
+        html.to_string()
+    } else {
+        extracted
+    };
     let blocks = blocks_from_html(&content);
 
     if blocks.is_empty() {

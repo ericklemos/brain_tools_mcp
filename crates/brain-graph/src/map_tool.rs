@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::model::ProjectCodeGraph;
+use crate::model::{ProjectCodeGraph, SymbolNode};
 
 /// At most this many symbols per file: a 60-function file would otherwise be
 /// one section too large to ever fit the budget.
@@ -24,10 +24,23 @@ pub struct MapTool {
     default_budget_tokens: usize,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MapDepth {
+    #[default]
+    Files,
+    Dirs,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MapParams {
     pub path: Option<String>,
     pub budget_tokens: Option<usize>,
+    /// `files` (default) lists symbols per file; `dirs` answers "where am I"
+    /// with one section per directory, which is much cheaper on a large repo.
+    pub depth: Option<MapDepth>,
+    /// Test-only symbols are hidden by default and counted in the heading.
+    pub include_tests: Option<bool>,
 }
 
 impl MapTool {
@@ -56,7 +69,12 @@ impl MapTool {
         // formatting.
         let sections = {
             let lock = self.graph.read().await;
-            self.sections(&lock, params.path.as_deref())
+            self.sections(
+                &lock,
+                params.path.as_deref(),
+                params.depth.unwrap_or_default(),
+                params.include_tests.unwrap_or(false),
+            )
         };
         if sections.is_empty() {
             let subject = params
@@ -79,9 +97,16 @@ impl MapTool {
         CallToolResult::text(budget::render(&selection, handle.as_deref()))
     }
 
-    /// One section per file, ordered by how much the rest of the code depends
-    /// on it. The agent reads the skeleton from the top until its budget ends.
-    fn sections(&self, graph: &ProjectCodeGraph, path_filter: Option<&str>) -> Vec<Section> {
+    /// One section per file (or per directory), ordered by how much the rest
+    /// of the code depends on it. The agent reads the skeleton from the top
+    /// until its budget ends.
+    fn sections(
+        &self,
+        graph: &ProjectCodeGraph,
+        path_filter: Option<&str>,
+        depth: MapDepth,
+        include_tests: bool,
+    ) -> Vec<Section> {
         let filter = path_filter.map(|p| p.trim_start_matches("./"));
 
         let mut files: Vec<(String, &Vec<petgraph::stable_graph::NodeIndex>)> = graph
@@ -100,9 +125,28 @@ impl MapTool {
             })
             .collect();
 
+        // A file with no visible (non-test) symbol is not orientation.
+        files.retain(|(_, nodes)| {
+            include_tests
+                || nodes.iter().any(|&idx| {
+                    graph
+                        .graph
+                        .node_weight(idx)
+                        .is_some_and(|node| !node.is_test)
+                })
+        });
+
         if files.is_empty() {
             return Vec::new();
         }
+
+        let visible = |nodes: &Vec<petgraph::stable_graph::NodeIndex>| -> Vec<&SymbolNode> {
+            nodes
+                .iter()
+                .filter_map(|&idx| graph.graph.node_weight(idx))
+                .filter(|node| include_tests || !node.is_test)
+                .collect()
+        };
 
         // Fan-in is the cheapest useful centrality: a file everyone calls is the
         // file the agent should know first. Ties fall back to path for
@@ -119,7 +163,7 @@ impl MapTool {
                 .then_with(|| path_a.cmp(path_b))
         });
 
-        let total_symbols: usize = files.iter().map(|(_, nodes)| nodes.len()).sum();
+        let total_symbols: usize = files.iter().map(|(_, nodes)| visible(nodes).len()).sum();
         let mut sections = vec![Section {
             heading: format!(
                 "### Mapa do projeto — {} arquivos, {total_symbols} símbolos (mais centrais primeiro)",
@@ -129,17 +173,81 @@ impl MapTool {
             priority: 255,
         }];
 
+        if depth == MapDepth::Dirs {
+            struct DirRow {
+                files: usize,
+                symbols: usize,
+                tests: usize,
+                fan_in: usize,
+                top: Vec<(String, usize, usize)>,
+            }
+
+            let mut dirs: std::collections::BTreeMap<String, DirRow> =
+                std::collections::BTreeMap::new();
+            for (relative, nodes) in files {
+                let symbols = visible(nodes);
+                let hidden = nodes.len().saturating_sub(symbols.len());
+                let (dir, file_name) = match relative.rsplit_once('/') {
+                    Some((dir, file)) => (dir.to_string(), file.to_string()),
+                    None => (".".to_string(), relative.clone()),
+                };
+                let fan_in = score(nodes);
+                let row = dirs.entry(dir).or_insert(DirRow {
+                    files: 0,
+                    symbols: 0,
+                    tests: 0,
+                    fan_in: 0,
+                    top: Vec::new(),
+                });
+                row.files += 1;
+                row.symbols += symbols.len();
+                row.tests += hidden;
+                row.fan_in += fan_in;
+                row.top.push((file_name, symbols.len(), fan_in));
+            }
+
+            let mut rows: Vec<(String, DirRow)> = dirs.into_iter().collect();
+            rows.sort_by(|(dir_a, a), (dir_b, b)| {
+                b.fan_in.cmp(&a.fan_in).then_with(|| dir_a.cmp(dir_b))
+            });
+
+            for (dir, mut row) in rows {
+                row.top
+                    .sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+                let mut body = String::new();
+                for (file, symbols, fan_in) in row.top.iter().take(5) {
+                    body.push_str(&format!(
+                        "- `{file}` — {symbols} símbolos, {fan_in} chamadas\n"
+                    ));
+                }
+                if row.top.len() > 5 {
+                    body.push_str(&format!("- … e mais {} arquivos\n", row.top.len() - 5));
+                }
+                let tests_note = if row.tests > 0 {
+                    format!(" ({} testes)", row.tests)
+                } else {
+                    String::new()
+                };
+                sections.push(Section {
+                    heading: format!(
+                        "### `{dir}` — {} arquivos, {} símbolos{tests_note}, {} chamadas recebidas",
+                        row.files, row.symbols, row.fan_in
+                    ),
+                    body,
+                    priority: (150 + row.fan_in.min(100)) as u8,
+                });
+            }
+            return sections;
+        }
+
         for (relative, nodes) in files {
-            let mut symbols: Vec<(&str, &str)> = nodes
-                .iter()
-                .filter_map(|&idx| graph.graph.node_weight(idx))
-                .map(|node| (node.name.as_str(), node.signature.as_str()))
-                .collect();
-            symbols.sort_by(|a, b| a.0.cmp(b.0));
+            let symbols = visible(nodes);
+            let hidden = nodes.len().saturating_sub(symbols.len());
 
             let mut body = String::new();
-            for &(name, signature) in symbols.iter().take(MAX_SYMBOLS_PER_FILE) {
-                let signature = compact_signature(signature);
+            for node in symbols.iter().take(MAX_SYMBOLS_PER_FILE) {
+                let name = node.name.as_str();
+                let signature = compact_signature(&node.signature);
                 if signature.is_empty() {
                     body.push_str(&format!("- `{name}`\n"));
                 } else if signature.contains(name) {
@@ -158,10 +266,15 @@ impl MapTool {
             }
 
             let fan_in = score(nodes);
+            let tests_note = if hidden > 0 {
+                format!(" ({hidden} testes)")
+            } else {
+                String::new()
+            };
             sections.push(Section {
                 heading: format!(
-                    "### `{relative}` — {} símbolos, {fan_in} chamadas recebidas",
-                    nodes.len()
+                    "### `{relative}` — {} símbolos{tests_note}, {fan_in} chamadas recebidas",
+                    symbols.len()
                 ),
                 body,
                 // Centrality decides survival; 254 is reserved for the header.
@@ -181,7 +294,7 @@ impl ToolPlugin for MapTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_map".to_string(),
-            description: "Esqueleto do projeto: arquivos e símbolos com assinaturas, ordenados pela centralidade (quantas chamadas recebem). Use para se orientar sem abrir arquivos com Read.".to_string(),
+            description: "Mapa do projeto por centralidade: arquivos/símbolos ou resumo por diretório.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -192,6 +305,17 @@ impl ToolPlugin for MapTool {
                     "budget_tokens": {
                         "type": "integer",
                         "description": "Teto de tokens (excedente em brain_peek)."
+                    },
+                    "depth": {
+                        "type": "string",
+                        "enum": ["files", "dirs"],
+                        "default": "files",
+                        "description": "files: símbolos por arquivo; dirs: um resumo por diretório (mais barato para 'onde estou')."
+                    },
+                    "include_tests": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Inclui símbolos de teste; por padrão eles são contados no cabeçalho e omitidos."
                     }
                 }
             }),
@@ -312,4 +436,47 @@ mod tests {
         assert_eq!(p.name(), "brain_map");
         assert_eq!(p.schema().name, "brain_map");
     }
+
+    #[tokio::test]
+    async fn a_directory_digest_groups_files_and_skips_signatures() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a.rs"), "pub fn alpha() {}\n").unwrap();
+        fs::write(dir.path().join("src/b.rs"), "pub fn beta() {}\n").unwrap();
+        let graph = GraphBuilder::new().unwrap().build_graph(dir.path()).unwrap();
+        let out = tool(&dir, Arc::new(RwLock::new(graph)))
+            .handle_map(serde_json::json!({ "depth": "dirs" }))
+            .await;
+        let text = &out.content[0].text;
+
+        assert!(text.contains("### `src` — 2 arquivos"), "{text}");
+        assert!(text.contains("a.rs"), "{text}");
+        assert!(!text.contains("pub fn alpha"), "a dir digest is not a symbol list: {text}");
+    }
+
+    #[tokio::test]
+    async fn test_symbols_are_hidden_unless_requested() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn production() {}\n\n#[test]\nfn hidden_test() {}\n",
+        )
+        .unwrap();
+        let graph = GraphBuilder::new().unwrap().build_graph(dir.path()).unwrap();
+        let tool = tool(&dir, Arc::new(RwLock::new(graph)));
+
+        let default = tool.handle_map(serde_json::json!({})).await.content[0].text.clone();
+        assert!(default.contains("production"), "{default}");
+        assert!(!default.contains("hidden_test"), "{default}");
+        assert!(default.contains("1 testes"), "{default}");
+
+        let all = tool
+            .handle_map(serde_json::json!({ "include_tests": true }))
+            .await
+            .content[0]
+            .text
+            .clone();
+        assert!(all.contains("hidden_test"), "{all}");
+    }
+
 }

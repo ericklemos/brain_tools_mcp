@@ -907,7 +907,7 @@ mod tests {
         assert!(!second.contains("!raw.is_empty()"), "{second}");
 
         let handle = second
-            .split("`brain_peek` em `")
+            .split("`brain_peek` `")
             .nth(1)
             .and_then(|rest| rest.split('`').next())
             .expect("pointer cites a handle");

@@ -1,5 +1,4 @@
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -57,13 +56,16 @@ impl WebCache {
 
     pub fn store(&self, entry: &CachedPage, raw: &[u8]) -> Result<()> {
         let dir = self.dir_for(&entry.url);
-        fs::create_dir_all(&dir)
-            .map_err(|error| WebError::new(FailureKind::Cache, format!("cannot create cache dir: {error}")))?;
+        fs::create_dir_all(&dir).map_err(|error| {
+            WebError::new(FailureKind::Cache, format!("cannot create cache dir: {error}"))
+        })?;
 
-        let meta = serde_json::to_vec(entry)
-            .map_err(|error| WebError::new(FailureKind::Cache, format!("cannot encode cache meta: {error}")))?;
-        let page = serde_json::to_vec(&entry.page)
-            .map_err(|error| WebError::new(FailureKind::Cache, format!("cannot encode cached page: {error}")))?;
+        let meta = serde_json::to_vec(entry).map_err(|error| {
+            WebError::new(FailureKind::Cache, format!("cannot encode cache meta: {error}"))
+        })?;
+        let page = serde_json::to_vec(&entry.page).map_err(|error| {
+            WebError::new(FailureKind::Cache, format!("cannot encode cached page: {error}"))
+        })?;
 
         atomic_write(&dir.join("raw.bin"), raw)?;
         atomic_write(&dir.join("page.json"), &page)?;
@@ -81,8 +83,9 @@ impl WebCache {
             return Ok(());
         };
         entry.fetched_at = now_secs();
-        let encoded = serde_json::to_vec(&entry)
-            .map_err(|error| WebError::new(FailureKind::Cache, format!("cannot encode cache meta: {error}")))?;
+        let encoded = serde_json::to_vec(&entry).map_err(|error| {
+            WebError::new(FailureKind::Cache, format!("cannot encode cache meta: {error}"))
+        })?;
         atomic_write(&dir.join("meta.json"), &encoded)
     }
 
@@ -102,14 +105,16 @@ pub fn normalize_url(url: &str) -> String {
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)
-        .map_err(|error| WebError::new(FailureKind::Cache, format!("cannot write {}: {error}", tmp.display())))?;
+    fs::write(&tmp, bytes).map_err(|error| {
+        WebError::new(
+            FailureKind::Cache,
+            format!("cannot write {}: {error}", tmp.display()),
+        )
+    })?;
     fs::rename(&tmp, path).map_err(|error| {
-        WebError::new(FailureKind::Cache, format!("cannot commit {}: {error}", path.display()))
+        WebError::new(
+            FailureKind::Cache,
+            format!("cannot commit {}: {error}", path.display()),
+        )
     })
-}
-
-#[allow(dead_code)]
-fn io_error(error: io::Error) -> WebError {
-    WebError::new(FailureKind::Cache, error.to_string())
 }

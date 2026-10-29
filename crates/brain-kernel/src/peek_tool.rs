@@ -1,4 +1,4 @@
-use crate::budget::estimate_tokens;
+use crate::budget::{estimate_tokens, CHARS_PER_TOKEN};
 use crate::plugin::ToolPlugin;
 use crate::protocol::{CallToolResult, Tool};
 use crate::store::ResponseStore;
@@ -50,13 +50,18 @@ impl PeekTool {
         let page = &remaining[..end];
         let rest = &remaining[end..];
 
-        let mut out = String::new();
-        out.push_str(page);
-        out.push_str(&format!(
-            "\n\nRestante: {} caracteres (~{} tokens).",
-            rest.len(),
-            estimate_tokens(rest)
-        ));
+        if page.is_empty() && rest.is_empty() {
+            return CallToolResult::text("Fim do corpo.");
+        }
+
+        let mut out = page.to_string();
+        if !rest.is_empty() {
+            out.push_str(&format!(
+                "\n\nRestante: {} caracteres (~{} tokens).",
+                rest.len(),
+                estimate_tokens(rest)
+            ));
+        }
 
         CallToolResult::text(out)
     }
@@ -64,7 +69,7 @@ impl PeekTool {
 
 /// Inverse of the token estimate, used to size a page.
 fn chars_for_budget(budget_tokens: usize) -> usize {
-    (budget_tokens as f64 * 3.5) as usize
+    (budget_tokens as f64 * CHARS_PER_TOKEN) as usize
 }
 
 impl ToolPlugin for PeekTool {
@@ -154,7 +159,7 @@ mod tests {
 
         assert_eq!(out.is_error, None);
         assert!(out.content[0].text.starts_with("abc"));
-        assert!(out.content[0].text.contains("Restante: 0 caracteres"));
+        assert!(!out.content[0].text.contains("Restante"));
     }
 
     #[test]
@@ -169,26 +174,18 @@ mod tests {
     #[test]
     fn paginating_with_offset_covers_the_body_without_gaps_or_overlap() {
         let t = tool();
-        // 140 chars fits a 40-token page (140 chars).
-        let body: String = (0..140)
+        // 165 chars fits a 50-token page (~165 chars at 3.3 chars/token).
+        let body: String = (0..165)
             .map(|i| char::from(b'a' + (i % 26) as u8))
             .collect();
         let handle = body_of(&t, body.clone());
 
-        let first = t.peek(&handle, 0, 40);
+        let first = t.peek(&handle, 0, 50);
         let first_text = first.content[0].text.split("\n\nRestante:").next().unwrap();
-        assert_eq!(first_text.len(), 140);
+        assert_eq!(first_text.len(), 165);
 
-        let second = t.peek(&handle, first_text.len(), 40);
-        let second_text = second.content[0]
-            .text
-            .split("\n\nRestante:")
-            .next()
-            .unwrap();
-        assert!(second_text.is_empty());
-
-        let reassembled = format!("{first_text}{second_text}");
-        assert_eq!(reassembled, body);
+        let second = t.peek(&handle, first_text.len(), 50);
+        assert!(second.content[0].text.contains("Fim do corpo."));
     }
 
     #[test]
@@ -198,7 +195,7 @@ mod tests {
         let out = t.peek(&handle, 999, 2000);
 
         assert_eq!(out.is_error, None);
-        assert!(out.content[0].text.contains("Restante: 0 caracteres"));
+        assert!(out.content[0].text.contains("Fim do corpo."));
     }
 
     #[tokio::test]

@@ -326,6 +326,7 @@ impl GraphBuilder {
                 end_line: node.end_position().row + 1,
                 signature,
                 container,
+                is_test: is_test_definition(node, content.as_bytes(), lang),
             };
 
             let node_idx = code_graph.graph.add_node(symbol_node);
@@ -672,6 +673,44 @@ impl GraphBuilder {
             }
         }
     }
+}
+
+/// Whether a definition belongs to a test: `#[test]`, `#[tokio::test]`,
+/// `#[cfg(test)]`, or a `mod tests` ancestor.
+///
+/// The graph stores it so callers can decide to collapse test-only impacts
+/// instead of spending the response budget on them.
+fn is_test_definition(node: Node, source: &[u8], lang: SupportedLanguage) -> bool {
+    if lang != SupportedLanguage::Rust {
+        return false;
+    }
+
+    let mut current = Some(node);
+    while let Some(item) = current {
+        // Attributes are contiguous siblings immediately before the item.
+        let mut previous = item.prev_sibling();
+        while let Some(attribute) = previous {
+            if attribute.kind() != "attribute_item" {
+                break;
+            }
+            let text = attribute.utf8_text(source).unwrap_or("");
+            if text.contains("test") && !text.contains("not(test)") {
+                return true;
+            }
+            previous = attribute.prev_sibling();
+        }
+
+        if item.kind() == "mod_item"
+            && item
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source).ok())
+                == Some("tests")
+        {
+            return true;
+        }
+        current = item.parent();
+    }
+    false
 }
 
 /// The type or trait the node is written inside, if any.

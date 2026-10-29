@@ -28,6 +28,10 @@ pub struct SymbolNode {
     /// to reach `GraphBuilder::build`, not the eleven other `build`s.
     #[serde(default)]
     pub container: Option<String>,
+    /// Inside `#[cfg(test)]`/`mod tests` or carrying `#[test]`. Impact
+    /// reports and maps use this to collapse test-only callers by default.
+    #[serde(default)]
+    pub is_test: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

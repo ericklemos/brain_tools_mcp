@@ -220,6 +220,10 @@ impl GraphTraversal {
             }
         };
 
+        // When every row belongs to the same file, the subject already names
+        // it; repeating the path on every line spends ~1/3 of the digest.
+        let single_path = rows.iter().all(|row| row.path == rows[0].path);
+
         let mut sections = vec![Section {
             heading: format!("### `{subject}` — {} símbolos", rows.len()),
             body: format!(
@@ -235,10 +239,15 @@ impl GraphTraversal {
             } else {
                 signature
             };
+            let location = if single_path {
+                format!(":{}-{}", row.start, row.end)
+            } else {
+                format!("{}:{}-{}", row.path, row.start, row.end)
+            };
             sections.push(Section {
                 heading: format!(
-                    "- `{}:{}-{}` `{}` ←{} →{}",
-                    row.path, row.start, row.end, label, row.incoming, row.outgoing
+                    "- `{location}` `{label}` ←{} →{}",
+                    row.incoming, row.outgoing
                 ),
                 body: String::new(),
                 // Centrality decides what survives a tight budget.
@@ -249,13 +258,23 @@ impl GraphTraversal {
         sections
     }
 
-    /// One `Section` per impacted symbol: direct callers outrank transitive ones,
-    /// which is where a budget saves the most — a report often has 2 direct
-    /// callers and 40 transitive, and the decision needs the 2.
+    /// One `Section` per impacted file and depth: direct callers outrank
+    /// transitive ones, which is where a budget saves the most. Grouping by
+    /// file pays the path once instead of once per caller.
     pub fn impact_sections(
         graph: &ProjectCodeGraph,
         symbol_name: &str,
         root_dir: &Path,
+    ) -> Vec<Section> {
+        Self::impact_sections_with_options(graph, symbol_name, root_dir, true)
+    }
+
+    /// Same report, optionally collapsing test-only callers into a count.
+    pub fn impact_sections_with_options(
+        graph: &ProjectCodeGraph,
+        symbol_name: &str,
+        root_dir: &Path,
+        include_tests: bool,
     ) -> Vec<Section> {
         let matching_nodes = match graph.symbol_lookup.get(symbol_name) {
             Some(indices) => indices.clone(),
@@ -289,15 +308,6 @@ impl GraphTraversal {
                 None => target_node.name.clone(),
             };
 
-            sections.push(Section {
-                heading: format!(
-                    "#### `{}` (`{}:{}`) — impacto:",
-                    display_name, rel_path, target_node.start_line
-                ),
-                body: String::new(),
-                priority: 255,
-            });
-
             let mut visited = HashSet::new();
             visited.insert(target_idx);
 
@@ -305,58 +315,103 @@ impl GraphTraversal {
             queue.push_back((target_idx, 1usize));
 
             let mut impacted = Vec::new();
+            let mut hidden_tests = 0usize;
 
             while let Some((curr_idx, distance)) = queue.pop_front() {
                 for edge_ref in graph.graph.edges_directed(curr_idx, Direction::Incoming) {
                     let caller_idx = edge_ref.source();
-                    if visited.insert(caller_idx) {
-                        if let Some(caller) = graph.graph.node_weight(caller_idx) {
-                            impacted.push((caller, distance, edge_ref.weight().call_site_line));
-                            if distance < 3 {
-                                queue.push_back((caller_idx, distance + 1));
-                            }
-                        }
+                    if !visited.insert(caller_idx) {
+                        continue;
+                    }
+                    let Some(caller) = graph.graph.node_weight(caller_idx) else {
+                        continue;
+                    };
+                    if !include_tests && caller.is_test {
+                        hidden_tests += 1;
+                        continue;
+                    }
+                    impacted.push((caller, distance, edge_ref.weight().call_site_line));
+                    if distance < 3 {
+                        queue.push_back((caller_idx, distance + 1));
                     }
                 }
             }
 
-            if impacted.is_empty() {
+            let total = impacted.len();
+            let direct = impacted.iter().filter(|(_, distance, _)| *distance == 1).count();
+
+            if total == 0 {
                 // "No callers" and "no callers the graph could prove" are
                 // different claims, and this is the one an agent acts on when
                 // deleting code.
+                let body = if hidden_tests > 0 {
+                    format!(
+                        "Nenhum chamador de produção; {hidden_tests} de teste omitido(s) (include_tests: true)."
+                    )
+                } else {
+                    "Nenhuma aresta de chamada chega a este símbolo.".to_string()
+                };
                 sections.push(Section {
-                    heading: "⚠️ **Nenhum chamador encontrado no grafo** — não é o mesmo que não haver chamadores.".to_string(),
-                    // The disclosure already rides on the headline; repeating it
-                    // here would spend tokens on the same sentence.
-                    body: "Nenhuma aresta de chamada chega a este símbolo.".to_string(),
+                    heading: format!(
+                        "#### `{display_name}` (`{rel_path}:{}`) — impacto:",
+                        target_node.start_line
+                    ),
+                    body,
                     priority: 255,
                 });
                 continue;
             }
 
-            let total = impacted.len();
+            let hidden_note = if hidden_tests > 0 {
+                format!(
+                    "> {hidden_tests} chamada(s) de teste omitida(s); include_tests: true para ver.\n"
+                )
+            } else {
+                String::new()
+            };
+
             sections.push(Section {
-                heading: format!("**{total} impacto(s)**:"),
-                body: String::new(),
+                heading: format!(
+                    "#### `{display_name}` (`{rel_path}:{}`) — {total} impacto(s) · {direct} D1",
+                    target_node.start_line
+                ),
+                body: hidden_note,
                 priority: 255,
             });
 
-            for (caller, dist, line) in impacted {
+            // Group by (depth, file): one path and one depth label per file,
+            // not per caller. The heading stays self-contained, so truncation
+            // can drop a whole file without losing the context of the rest.
+            let mut groups: std::collections::BTreeMap<(usize, String), Vec<(usize, usize, String)>> =
+                std::collections::BTreeMap::new();
+            for (caller, distance, call_site) in impacted {
                 let path = caller
                     .file_path
                     .strip_prefix(root_dir)
                     .unwrap_or(&caller.file_path)
-                    .display();
+                    .display()
+                    .to_string();
+                groups
+                    .entry((distance, path))
+                    .or_default()
+                    .push((call_site, caller.start_line, caller.name.clone()));
+            }
 
-                let label = if dist == 1 { "direto" } else { "transitivo" };
+            for ((distance, path), mut sites) in groups {
+                sites.sort();
+                let label = if distance == 1 { "direto" } else { "transitivo" };
+                let mut body = String::new();
+                for (call_site, start_line, name) in sites {
+                    if call_site == start_line {
+                        body.push_str(&format!("- :{start_line} -> `{name}`\n"));
+                    } else {
+                        body.push_str(&format!("- :{start_line} -> `{name}` @{call_site}\n"));
+                    }
+                }
                 sections.push(Section {
-                    heading: format!(
-                        "- [{label} D{dist}] `{path}:{line_at}` -> `{name}` @{line}",
-                        line_at = caller.start_line,
-                        name = caller.name
-                    ),
-                    body: String::new(),
-                    priority: if dist == 1 { 255 } else { 120 },
+                    heading: format!("#### D{distance} · {label} — `{path}`"),
+                    body,
+                    priority: if distance == 1 { 255 } else { 120 },
                 });
             }
         }
@@ -574,4 +629,45 @@ mod budget_tests {
             direct.unwrap().heading
         );
     }
+
+    #[test]
+    fn impact_groups_by_file_and_collapses_test_callers() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "pub fn target() {}\n").unwrap();
+        fs::write(
+            dir.path().join("caller.rs"),
+            "pub fn caller() {\n    target();\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn target_is_called() {\n        target();\n    }\n}\n",
+        )
+        .unwrap();
+        let graph = graph_of(dir.path());
+
+        let production =
+            GraphTraversal::impact_sections_with_options(&graph, "target", dir.path(), false);
+        let header = production
+            .iter()
+            .find(|section| section.heading.contains("impacto(s)"))
+            .expect("target header");
+        assert!(
+            header.body.contains("1 chamada(s) de teste omitida"),
+            "hidden tests must be declared: {header:?}"
+        );
+        let group = production
+            .iter()
+            .find(|section| section.heading.contains("D1 · direto"))
+            .expect("direct group");
+        assert!(group.heading.contains("caller.rs"), "{group:?}");
+        assert!(group.body.contains("caller"), "{group:?}");
+        assert!(
+            !group.body.contains("target_is_called"),
+            "test callers are hidden by default: {group:?}"
+        );
+
+        let all = GraphTraversal::impact_sections_with_options(&graph, "target", dir.path(), true);
+        let group = all
+            .iter()
+            .find(|section| section.heading.contains("D1 · direto"))
+            .expect("direct group with tests");
+        assert!(group.body.contains("target_is_called"), "{group:?}");
+    }
+
 }

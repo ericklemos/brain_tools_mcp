@@ -6,7 +6,7 @@ use brain_kernel::protocol::{CallToolResult, Tool};
 use brain_kernel::store::ResponseStore;
 use brain_kernel::text::compact_signature;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -43,6 +43,7 @@ struct Rendered {
     pending: Option<Pending>,
 }
 
+#[derive(Clone)]
 struct Pending {
     path: PathBuf,
     id: String,
@@ -125,11 +126,19 @@ impl ReadTool {
                 .collect(),
         };
 
+        let budget = params.budget_tokens.unwrap_or(self.default_budget_tokens);
+        // A symbol can be larger than the whole budget. Split before selection,
+        // so the head fits now and the tail goes to the store with a handle
+        // instead of being cut inside the code fence by the chunker.
+        let rendered: Vec<Rendered> = rendered
+            .into_iter()
+            .flat_map(|rendered| expand_over_budget(rendered, budget))
+            .collect();
+
         let sections: Vec<Section> = rendered
             .iter()
             .map(|rendered| rendered.section.clone())
             .collect();
-        let budget = params.budget_tokens.unwrap_or(self.default_budget_tokens);
         let selection = budget::select(&sections, budget);
         let handle = if selection.omitted.is_empty() {
             None
@@ -144,6 +153,10 @@ impl ReadTool {
 
     /// Records only what actually entered the response: a section that was cut
     /// by the budget was not seen, so it must not be remembered as delivered.
+    ///
+    /// A symbol split by `budget::split_section` contributes several sections
+    /// that share one `Pending`. It counts as delivered only when every part
+    /// entered the response; otherwise the agent still needs the tail.
     fn settle(&self, rendered: &[Rendered], selection: &budget::Selection) {
         let Some(ledger) = &self.ledger else {
             return;
@@ -154,14 +167,34 @@ impl ReadTool {
             .map(|section| section.heading.as_str())
             .collect();
 
+        let mut tally: HashMap<(&Path, &str), (usize, usize)> = HashMap::new();
         for rendered in rendered {
             let Some(pending) = &rendered.pending else {
                 continue;
             };
-            if !included.contains(rendered.section.heading.as_str()) {
+            let entry = tally
+                .entry((pending.path.as_path(), pending.id.as_str()))
+                .or_insert((0, 0));
+            entry.0 += 1;
+            if included.contains(rendered.section.heading.as_str()) {
+                entry.1 += 1;
+            }
+        }
+
+        let mut handled: HashSet<(&Path, &str)> = HashSet::new();
+        for rendered in rendered {
+            let Some(pending) = &rendered.pending else {
+                continue;
+            };
+            let key = (pending.path.as_path(), pending.id.as_str());
+            if !handled.insert(key) {
                 continue;
             }
-            if pending.omitted {
+            let (total, seen) = tally.get(&key).copied().unwrap_or((1, 0));
+            if seen == 0 {
+                continue;
+            }
+            if seen < total || pending.omitted {
                 ledger.note_omitted(&pending.path, &pending.id);
             } else {
                 ledger.record(Delivery {
@@ -350,6 +383,23 @@ impl ReadTool {
     }
 }
 
+/// Splits a rendered section that alone exceeds the budget, cloning the
+/// ledger pending onto every part.
+fn expand_over_budget(rendered: Rendered, budget: usize) -> Vec<Rendered> {
+    let parts = budget::split_section(&rendered.section, budget);
+    if parts.len() <= 1 {
+        return vec![rendered];
+    }
+    let pending = rendered.pending;
+    parts
+        .into_iter()
+        .map(|section| Rendered {
+            section,
+            pending: pending.clone(),
+        })
+        .collect()
+}
+
 fn whole_file_section(content: &str, relative: &str) -> Section {
     let lang = if relative.ends_with(".kt") { "kotlin" } else { "rust" };
     Section {
@@ -370,7 +420,7 @@ impl ToolPlugin for ReadTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_read".to_string(),
-            description: "Lê o esqueleto do arquivo (assinaturas) ou o corpo de um símbolo; o hash do cabeçalho serve ao `brain_edit`.".to_string(),
+            description: "Esqueleto do arquivo ou corpo de um símbolo, com blake3 para `brain_edit`.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -462,7 +512,7 @@ mod tests {
         );
 
         let handle = second
-            .split("`brain_peek` em `")
+            .split("`brain_peek` `")
             .nth(1)
             .and_then(|rest| rest.split('`').next())
             .expect("pointer cites a handle");
@@ -532,6 +582,63 @@ mod tests {
             assert!(!text.contains("Já entregue"), "{text}");
         }
         assert!(ledger.is_empty(), "signatures are not deliveries");
+    }
+
+    fn tool_with_store(dir: &Path) -> (ReadTool, Arc<ResponseStore>) {
+        let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+        (ReadTool::new(dir, store.clone(), 2000), store)
+    }
+
+    #[test]
+    fn a_symbol_over_eighty_lines_is_returned_whole_when_it_fits() {
+        let dir = tempdir().unwrap();
+        let body: Vec<String> = (0..120).map(|i| format!("    let v{i} = {i};")).collect();
+        fs::write(
+            dir.path().join("long.rs"),
+            format!("pub fn long_fn() -> u32 {{\n{}\n    0\n}}\n", body.join("\n")),
+        )
+        .unwrap();
+        let (tool, _) = tool_with_store(dir.path());
+
+        let out = tool.read(ReadParams {
+            path: "long.rs".to_string(),
+            symbol: Some("long_fn".to_string()),
+            budget_tokens: Some(4000),
+            repeat: None,
+        });
+        let text = &out.content[0].text;
+        assert!(text.contains("let v119"), "the last line must be present: {text}");
+        assert!(!text.contains("truncated"), "{text}");
+    }
+
+    #[test]
+    fn an_oversized_symbol_is_split_and_the_tail_is_recoverable() {
+        let dir = tempdir().unwrap();
+        let body: Vec<String> = (0..300).map(|i| format!("    let v{i} = {i};")).collect();
+        fs::write(
+            dir.path().join("long.rs"),
+            format!("pub fn long_fn() -> u32 {{\n{}\n    0\n}}\n", body.join("\n")),
+        )
+        .unwrap();
+        let (tool, store) = tool_with_store(dir.path());
+
+        let out = tool.read(ReadParams {
+            path: "long.rs".to_string(),
+            symbol: Some("long_fn".to_string()),
+            budget_tokens: Some(300),
+            repeat: None,
+        });
+        let text = &out.content[0].text;
+        assert!(text.contains("parte 1/"), "{text}");
+
+        let handle = text
+            .split("handle: `")
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .expect("split symbol cites a handle");
+        let tail = store.get(handle).expect("tail must be stored");
+        assert!(tail.contains("let v299"), "the tail must be recoverable: {tail}");
+        assert!(tail.contains("parte 2/"), "{tail}");
     }
 
     fn fixture() -> tempfile::TempDir {

@@ -163,7 +163,7 @@ impl ToolPlugin for WriteTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_write".to_string(),
-            description: "Cria ou substitui arquivo inteiro sob o root (configs, docs, módulos). Sobrescrever exige `expected_hash` ou `overwrite: true`; escrita atômica e relida.".to_string(),
+            description: "Cria/substitui arquivo inteiro sob o root; sobrescrever exige hash.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

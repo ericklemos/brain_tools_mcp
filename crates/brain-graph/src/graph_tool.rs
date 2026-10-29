@@ -77,6 +77,7 @@ impl GraphHandler {
         struct Params {
             symbol_name: String,
             budget_tokens: Option<usize>,
+            include_tests: Option<bool>,
         }
 
         let params: Params = match serde_json::from_value(arguments) {
@@ -85,7 +86,12 @@ impl GraphHandler {
         };
 
         let lock = self.graph.read().await;
-        let sections = GraphTraversal::impact_sections(&lock, &params.symbol_name, &self.root_dir);
+        let sections = GraphTraversal::impact_sections_with_options(
+            &lock,
+            &params.symbol_name,
+            &self.root_dir,
+            params.include_tests.unwrap_or(false),
+        );
         if sections.is_empty() {
             return CallToolResult::text(format!(
                 "Símbolo `{}` não encontrado no índice do projeto.",

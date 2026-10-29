@@ -105,7 +105,7 @@ async fn truncated_search_is_recoverable_through_brain_peek() {
         "recovered body should hold the omitted snippet: {peek_text}"
     );
     assert!(
-        peek_text.contains("Restante: 0 caracteres"),
+        !peek_text.contains("Restante:"),
         "a 4000-token page should cover the whole body: {peek_text}"
     );
 

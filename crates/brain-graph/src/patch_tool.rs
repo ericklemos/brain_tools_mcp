@@ -213,7 +213,7 @@ impl ToolPlugin for PatchTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_patch".to_string(),
-            description: "Aplica diff unificado (`git diff`) sob o root com `git apply --check` antes de escrever. Cobre arquivos novos/não-Rust e recusa paths fora do root.".to_string(),
+            description: "Aplica diff unificado sob o root; valida com `git apply --check`.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

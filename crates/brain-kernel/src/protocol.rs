@@ -93,6 +93,10 @@ pub struct InitializeResult {
     pub capabilities: ServerCapabilities,
     #[serde(rename = "serverInfo")]
     pub server_info: ServerInfo,
+    /// Sent once at handshake. Cross-tool guidance belongs here, not repeated
+    /// in every tool description on every `tools/list`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

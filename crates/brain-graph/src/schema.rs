@@ -3,7 +3,7 @@ use brain_kernel::protocol::Tool;
 pub fn brain_context_graph_tool() -> Tool {
     Tool {
         name: "brain_context_graph".to_string(),
-        description: "FONTE DE VERDADE das relações. Quem chama e o que o símbolo/arquivo consome, com assinaturas; não reabra arquivos com Read para conferir.".to_string(),
+        description: "Quem chama e o que o símbolo/arquivo consome, com assinaturas.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -31,13 +31,18 @@ pub fn brain_context_graph_tool() -> Tool {
 pub fn brain_impact_check_tool() -> Tool {
     Tool {
         name: "brain_impact_check".to_string(),
-        description: "FONTE DE VERDADE do impacto. Chamadores reversos que quebram se a assinatura mudar; não reabra com Read para conferir.".to_string(),
+        description: "Chamadores reversos que quebram se a assinatura mudar.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "symbol_name": {
                     "type": "string",
                     "description": "Nome da função, método ou struct que será modificada."
+                },
+                "include_tests": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Inclui chamadores de teste; por padrão eles são contados e omitidos."
                 },
                 "budget_tokens": {
                     "type": "integer",
