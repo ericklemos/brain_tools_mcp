@@ -90,25 +90,30 @@ impl HistoryTool {
             Err(e) => return CallToolResult::error(format!("Invalid arguments: {e}")),
         };
 
-        let lock = self.graph.read().await;
-        let nodes = match lock.symbol_lookup.get(&params.symbol) {
-            Some(indices) if !indices.is_empty() => indices,
-            _ => {
+        // Resolve the span under the lock and release it before spawning git:
+        // git log -L blocks for as long as the history takes, and the watcher
+        // must still be able to write while it runs.
+        let (relative, start_line, end_line) = {
+            let lock = self.graph.read().await;
+            let nodes = match lock.symbol_lookup.get(&params.symbol) {
+                Some(indices) if !indices.is_empty() => indices,
+                _ => {
+                    return CallToolResult::text(format!(
+                        "Símbolo `{}` não encontrado no índice.",
+                        params.symbol
+                    ))
+                }
+            };
+
+            let Some(node) = nodes.iter().filter_map(|&idx| lock.graph.node_weight(idx)).next() else {
                 return CallToolResult::text(format!(
                     "Símbolo `{}` não encontrado no índice.",
                     params.symbol
-                ))
-            }
-        };
+                ));
+            };
 
-        let Some(node) = nodes.iter().filter_map(|&idx| lock.graph.node_weight(idx)).next() else {
-            return CallToolResult::text(format!(
-                "Símbolo `{}` não encontrado no índice.",
-                params.symbol
-            ));
+            (self.relative(node), node.start_line, node.end_line)
         };
-
-        let relative = self.relative(node);
         let max_commits = params
             .max_commits
             .unwrap_or(DEFAULT_MAX_COMMITS)
@@ -123,7 +128,7 @@ impl HistoryTool {
                 "-n",
                 &max_commits.to_string(),
                 "-L",
-                &format!("{},{}:{}", node.start_line, node.end_line, relative),
+                &format!("{},{}:{}", start_line, end_line, relative),
             ])
             .output()
         {
@@ -142,7 +147,7 @@ impl HistoryTool {
         if commits.is_empty() {
             return CallToolResult::text(format!(
                 "Nenhum commit toca `{}` (`{relative}:{}-{}`); o símbolo pode ser novo ou não versionado.",
-                params.symbol, node.start_line, node.end_line
+                params.symbol, start_line, end_line
             ));
         }
 
@@ -150,8 +155,8 @@ impl HistoryTool {
             heading: format!(
                 "### Histórico de `{}` (`{relative}:{}-{}`) — {} commits",
                 params.symbol,
-                node.start_line,
-                node.end_line,
+                start_line,
+                end_line,
                 commits.len()
             ),
             body: String::new(),

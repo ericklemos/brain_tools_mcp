@@ -1,7 +1,10 @@
-use crate::error::{BrainError, Result};
+use crate::error::Result;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tree_sitter::{Node, Parser, Point};
+use std::sync::Arc;
+use tree_sitter::{Node, Point, Tree};
+
+use crate::parse_cache::{ParseCache, ParseWorker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportedLanguage {
@@ -17,6 +20,21 @@ impl SupportedLanguage {
             _ => None,
         }
     }
+
+    /// The tree-sitter grammar this language is parsed with.
+    pub fn grammar(self) -> tree_sitter::Language {
+        match self {
+            Self::Rust => tree_sitter_rust::LANGUAGE.into(),
+            Self::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rust => "Rust",
+            Self::Kotlin => "Kotlin",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,12 +47,18 @@ pub struct AstSnippet {
     pub end_line: usize,
 }
 
-#[derive(Default)]
-pub struct AstChunker;
+#[derive(Default, Clone)]
+pub struct AstChunker {
+    cache: Option<Arc<ParseCache>>,
+}
 
 impl AstChunker {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    pub fn with_cache(cache: Arc<ParseCache>) -> Self {
+        Self { cache: Some(cache) }
     }
 
     pub fn extract_snippets(
@@ -43,28 +67,63 @@ impl AstChunker {
         content: &str,
         matched_lines: &[usize],
     ) -> Result<Vec<AstSnippet>> {
+        self.extract_snippets_limited(file_path, content, matched_lines, None)
+    }
+
+    /// Same as [`Self::extract_snippets`], with an optional per-symbol line cap.
+    ///
+    /// `brain_read` passes `None`: the full span is the product. `brain_search`
+    /// passes a cap because a result set is a summary, and the marker points the
+    /// agent at the tool that has the whole body.
+    pub fn extract_snippets_limited(
+        &self,
+        file_path: &Path,
+        content: &str,
+        matched_lines: &[usize],
+        max_lines: Option<usize>,
+    ) -> Result<Vec<AstSnippet>> {
+        let mut worker = ParseWorker::new();
+        self.extract_snippets_limited_with(
+            &mut worker,
+            file_path,
+            content,
+            matched_lines,
+            max_lines,
+        )
+    }
+
+    /// Same as [`Self::extract_snippets`], but reuses the parser owned by
+    /// `worker` instead of building one per file. One worker per thread:
+    /// tree-sitter parsers are not `Sync`.
+    pub fn extract_snippets_with(
+        &self,
+        worker: &mut ParseWorker,
+        file_path: &Path,
+        content: &str,
+        matched_lines: &[usize],
+    ) -> Result<Vec<AstSnippet>> {
+        self.extract_snippets_limited_with(worker, file_path, content, matched_lines, None)
+    }
+
+    /// Shared implementation; `max_lines: None` returns the whole symbol.
+    pub fn extract_snippets_limited_with(
+        &self,
+        worker: &mut ParseWorker,
+        file_path: &Path,
+        content: &str,
+        matched_lines: &[usize],
+        max_lines: Option<usize>,
+    ) -> Result<Vec<AstSnippet>> {
         let lang = match SupportedLanguage::from_path(file_path) {
             Some(l) => l,
             None => return Ok(Vec::new()),
         };
 
-        let mut parser = Parser::new();
-        match lang {
-            SupportedLanguage::Rust => {
-                parser
-                    .set_language(&tree_sitter_rust::LANGUAGE.into())
-                    .map_err(|e| BrainError::Ast(format!("Rust grammar load error: {e}")))?;
-            }
-            SupportedLanguage::Kotlin => {
-                parser
-                    .set_language(&tree_sitter_kotlin_ng::LANGUAGE.into())
-                    .map_err(|e| BrainError::Ast(format!("Kotlin grammar load error: {e}")))?;
-            }
+        if matched_lines.is_empty() {
+            return Ok(Vec::new());
         }
 
-        let tree = parser
-            .parse(content, None)
-            .ok_or_else(|| BrainError::Ast("Failed to parse AST".to_string()))?;
+        let tree = self.tree_for(worker, file_path, content, lang)?;
         let root = tree.root_node();
         let content_bytes = content.as_bytes();
 
@@ -91,11 +150,13 @@ impl AstChunker {
                     let raw_code = &content[scope_node.start_byte()..scope_node.end_byte()];
 
                     let lines: Vec<&str> = raw_code.lines().collect();
-                    let code = if lines.len() > 80 {
-                        let truncated = lines[..80].join("\n");
-                        format!("{}\n// ... (truncated {} lines)", truncated, lines.len() - 80)
-                    } else {
-                        raw_code.to_string()
+                    let code = match max_lines {
+                        Some(limit) if lines.len() > limit => format!(
+                            "{}\n// ... (+{} linhas; peça o corpo inteiro com brain_read)",
+                            lines[..limit].join("\n"),
+                            lines.len() - limit
+                        ),
+                        _ => raw_code.to_string(),
                     };
 
                     snippets.push(AstSnippet {
@@ -113,7 +174,39 @@ impl AstChunker {
         Ok(snippets)
     }
 
-    fn find_enclosing_scope<'a>(&self, mut node: Node<'a>, lang: SupportedLanguage) -> Option<Node<'a>> {
+    /// Cache lookup keyed by content digest. A changed file is a miss, never
+    /// a stale answer; a miss parses and stores the canonical tree.
+    fn tree_for(
+        &self,
+        worker: &mut ParseWorker,
+        file_path: &Path,
+        content: &str,
+        lang: SupportedLanguage,
+    ) -> Result<Arc<Tree>> {
+        let digest = self
+            .cache
+            .as_ref()
+            .map(|_| blake3::hash(content.as_bytes()));
+        let cached = match (&self.cache, digest) {
+            (Some(cache), Some(digest)) => cache.get(file_path, digest),
+            _ => None,
+        };
+        if let Some(tree) = cached {
+            return Ok(tree);
+        }
+
+        let tree = Arc::new(worker.parse(lang, content)?);
+        if let (Some(cache), Some(digest)) = (&self.cache, digest) {
+            cache.insert(file_path, digest, tree.clone());
+        }
+        Ok(tree)
+    }
+
+    fn find_enclosing_scope<'a>(
+        &self,
+        mut node: Node<'a>,
+        lang: SupportedLanguage,
+    ) -> Option<Node<'a>> {
         loop {
             let kind = node.kind();
             let is_scope = match lang {

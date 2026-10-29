@@ -162,9 +162,15 @@ impl DiffTool {
             ));
         }
 
-        let lock = self.graph.read().await;
-        let include = Include::from_param(params.include.as_ref());
-        let sections = self.sections(&lock, &changed, include, base);
+        // The sections own their strings, so the read guard can be dropped
+        // before formatting: keeping it through the render only blocks the
+        // watcher from writing.
+        let sections = {
+            let lock = self.graph.read().await;
+            let include = Include::from_param(params.include.as_ref());
+            self.sections(&lock, &changed, include, base)
+        };
+
         let budget_tokens = params.budget_tokens.unwrap_or(self.default_budget_tokens);
         let selection = budget::select(&sections, budget_tokens);
         let handle = if selection.omitted.is_empty() {

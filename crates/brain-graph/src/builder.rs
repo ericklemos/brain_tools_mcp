@@ -2,17 +2,20 @@ use crate::model::*;
 use crate::queries::GraphQueries;
 use crate::scope::{self, ImportTarget, Resolution, ScopeResolver};
 use brain_kernel::ast::SupportedLanguage;
+use brain_kernel::parse_cache::{ParseCache, ParseWorker};
 use brain_kernel::{BrainError, Result};
 use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Parser, QueryCursor};
+use tree_sitter::{Node, QueryCursor};
 
 pub struct GraphBuilder {
     queries: GraphQueries,
+    cache: Option<Arc<ParseCache>>,
 }
 
 /// One call expression in a file, with the captures of every query pattern
@@ -28,7 +31,15 @@ impl GraphBuilder {
     pub fn new() -> Result<Self> {
         Ok(Self {
             queries: GraphQueries::new()?,
+            cache: None,
         })
+    }
+
+    /// Shares parsed trees with search and read. The graph pays for the parse
+    /// once; later requests are digest hits instead of reparsing.
+    pub fn with_parse_cache(mut self, cache: Arc<ParseCache>) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     pub fn build_graph(&self, root_dir: &Path) -> Result<ProjectCodeGraph> {
@@ -41,37 +52,66 @@ impl GraphBuilder {
         // Pass 0: parse, and teach the resolver where every file lives. Imports
         // cannot be resolved before the whole directory layout is known, which
         // is why this is a pass of its own.
-        for path in &files {
-            let content = match fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+        // Reading and parsing are independent per file, so they run on a
+        // handful of threads; the shared graph is only touched afterwards, in
+        // files order, which keeps node indices deterministic between runs.
+        let parsed = std::thread::scope(|scope| {
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .min(files.len().max(1));
+            let chunk = files.len().div_ceil(workers).max(1);
 
-            let hash = blake3::hash(content.as_bytes());
+            let cache = self.cache.clone();
+            let handles: Vec<_> = files
+                .chunks(chunk)
+                .map(|slice| {
+                    let cache = cache.clone();
+                    scope.spawn(move || {
+                        let mut out = Vec::with_capacity(slice.len());
+                        // One grammar load per worker, not one per file.
+                        let mut worker = ParseWorker::new();
+                        for path in slice {
+                            let content = match fs::read_to_string(path) {
+                                Ok(c) => c,
+                                Err(_) => continue,
+                            };
+
+                            let hash = blake3::hash(content.as_bytes());
+                            let tree = SupportedLanguage::from_path(path).and_then(|lang| {
+                                worker
+                                    .parse(lang, &content)
+                                    .ok()
+                                    .map(|tree| (lang, Arc::new(tree)))
+                            });
+                            if let (Some(cache), Some((_, tree))) = (&cache, &tree) {
+                                cache.insert(path, hash, tree.clone());
+                            }
+
+                            out.push((path.clone(), content, hash, tree));
+                        }
+                        out
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+
+        for (path, content, hash, tree) in parsed {
             code_graph.file_hashes.insert(path.clone(), hash);
 
-            if let Some(lang) = SupportedLanguage::from_path(path) {
-                let mut parser = Parser::new();
-                let tree = match lang {
-                    SupportedLanguage::Rust => {
-                        let _ = parser.set_language(&tree_sitter_rust::LANGUAGE.into());
-                        parser.parse(&content, None)
-                    }
-                    SupportedLanguage::Kotlin => {
-                        let _ = parser.set_language(&tree_sitter_kotlin_ng::LANGUAGE.into());
-                        parser.parse(&content, None)
-                    }
-                };
-
-                if let Some(t) = tree {
-                    code_graph
-                        .resolver
-                        .register_file(path, &scope::crate_name_for(path));
-                    file_trees.insert(path.clone(), t);
-                }
+            if let Some((_, tree)) = tree {
+                code_graph
+                    .resolver
+                    .register_file(&path, &scope::crate_name_for(&path));
+                file_trees.insert(path.clone(), tree);
             }
 
-            file_contents.insert(path.clone(), content);
+            file_contents.insert(path, content);
         }
 
         // Pass 1: definitions (nodes).
@@ -136,6 +176,9 @@ impl GraphBuilder {
     ) -> Result<bool> {
         if !path.exists() {
             code_graph.remove_file_nodes(path);
+            if let Some(cache) = &self.cache {
+                cache.invalidate(path);
+            }
             return Ok(true);
         }
 
@@ -157,25 +200,25 @@ impl GraphBuilder {
             None => return Ok(false),
         };
 
-        let mut parser = Parser::new();
-        let tree = match lang {
-            SupportedLanguage::Rust => {
-                let _ = parser.set_language(&tree_sitter_rust::LANGUAGE.into());
-                parser.parse(&content, None)
-            }
-            SupportedLanguage::Kotlin => {
-                let _ = parser.set_language(&tree_sitter_kotlin_ng::LANGUAGE.into());
-                parser.parse(&content, None)
-            }
-        };
+        let mut worker = ParseWorker::new();
+        let tree = worker.parse(lang, &content).ok().map(Arc::new);
+        if let (Some(cache), Some(tree)) = (&self.cache, &tree) {
+            cache.insert(path, current_hash, tree.clone());
+        }
 
-        if let Some(t) = tree {
+        if let Some(tree) = tree {
             code_graph
                 .resolver
                 .register_file(path, &scope::crate_name_for(path));
-            self.extract_definitions_from_file(code_graph, path, &content, &t.root_node(), lang)?;
-            self.extract_imports_from_file(code_graph, path, &content, &t.root_node(), lang)?;
-            self.extract_relations_from_file(code_graph, path, &content, &t.root_node(), lang)?;
+            self.extract_definitions_from_file(
+                code_graph,
+                path,
+                &content,
+                &tree.root_node(),
+                lang,
+            )?;
+            self.extract_imports_from_file(code_graph, path, &content, &tree.root_node(), lang)?;
+            self.extract_relations_from_file(code_graph, path, &content, &tree.root_node(), lang)?;
         }
 
         Ok(true)
@@ -212,6 +255,9 @@ impl GraphBuilder {
                 }
             }
         }
+        // Walk order is not guaranteed; sorting makes the parallel parse and
+        // the node indices stable between runs.
+        files.sort();
         Ok(files)
     }
 

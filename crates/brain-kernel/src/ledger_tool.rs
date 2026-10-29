@@ -71,7 +71,11 @@ impl LedgerTool {
             LedgerAction::Record => return self.record(&params),
             LedgerAction::List => self.list_sections(&self.entries()),
             LedgerAction::Search => {
-                let Some(query) = params.text.as_deref().map(str::trim).filter(|q| !q.is_empty())
+                let Some(query) = params
+                    .text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty())
                 else {
                     return CallToolResult::error(
                         "A ação `search` exige `text` com os termos da busca.".to_string(),
@@ -96,10 +100,13 @@ impl LedgerTool {
     }
 
     fn record(&self, params: &LedgerParams) -> CallToolResult {
-        let Some(text) = params.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
-            return CallToolResult::error(
-                "A ação `record` exige `text` não vazio.".to_string(),
-            );
+        let Some(text) = params
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        else {
+            return CallToolResult::error("A ação `record` exige `text` não vazio.".to_string());
         };
 
         let normalized = normalize(text);
@@ -143,7 +150,10 @@ impl LedgerTool {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut file = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         let line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
         writeln!(file, "{line}")
     }

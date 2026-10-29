@@ -10,10 +10,16 @@ pub struct Section {
     pub priority: u8,
 }
 
-/// Rough token estimate. No tokenizer: the number only decides how many
-/// sections fit, never correctness, so approximation is enough and cheaper.
+/// Characters per estimated token.
+///
+/// 3.3 is deliberately conservative for source code: Rust and JSON tokenize
+/// near 3.0-3.3 chars/token, while prose sits near 4.0. A ceiling that
+/// undershoots the budget is worse than one that trims a little early: the
+/// client pays for the overflow on every call.
+pub const CHARS_PER_TOKEN: f64 = 3.3;
+
 pub fn estimate_tokens(text: &str) -> usize {
-    ((text.chars().count() as f64) / 3.5).ceil() as usize
+    ((text.chars().count() as f64) / CHARS_PER_TOKEN).ceil() as usize
 }
 
 fn section_tokens(section: &Section) -> usize {
@@ -84,6 +90,118 @@ pub fn select(sections: &[Section], budget_tokens: usize) -> Selection {
     selection
 }
 
+/// Splits a section that alone exceeds the budget into self-labelled parts.
+///
+/// A section can be bigger than the whole ceiling (a 300-line symbol, a whole
+/// file). Emitting it whole blows the budget; dropping it hides the answer.
+/// Each part keeps the original heading plus `· parte i/n`, and a Markdown
+/// code fence is reopened per part so every fragment still renders as code.
+/// The omitted parts go to the store through the normal envelope, so nothing
+/// becomes unreachable.
+pub fn split_section(section: &Section, budget_tokens: usize) -> Vec<Section> {
+    if budget_tokens == 0 || section_tokens(section) <= budget_tokens {
+        return vec![section.clone()];
+    }
+
+    // Leave room for the heading and the `· parte i/n` suffix.
+    let heading_tokens = estimate_tokens(&section.heading) + 8;
+    let body_budget = budget_tokens.saturating_sub(heading_tokens).max(1);
+    let body_chars = (body_budget as f64 * CHARS_PER_TOKEN).floor() as usize;
+
+    let (prefix, inner, suffix) = split_fence(&section.body);
+    let chunks = chunk_lines(&inner, body_chars);
+    let total = chunks.len();
+    if total <= 1 {
+        return vec![section.clone()];
+    }
+
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| Section {
+            heading: format!("{} · parte {}/{}", section.heading, index + 1, total),
+            body: format!("{prefix}{chunk}{suffix}"),
+            priority: section.priority,
+        })
+        .collect()
+}
+
+/// Separates a body into (preamble + opening fence, inner text, closing fence).
+/// A body without a fence is returned whole.
+fn split_fence(body: &str) -> (String, String, String) {
+    let trimmed = body.trim_end_matches('\n');
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let Some(open) = lines.iter().position(|line| line.starts_with("```")) else {
+        return (String::new(), body.to_string(), String::new());
+    };
+    let Some(close) = lines.iter().rposition(|line| line.trim_end() == "```") else {
+        return (String::new(), body.to_string(), String::new());
+    };
+    if close <= open {
+        return (String::new(), body.to_string(), String::new());
+    }
+
+    (
+        format!("{}\n", lines[..=open].join("\n")),
+        lines[open + 1..close].join("\n"),
+        "```\n".to_string(),
+    )
+}
+
+/// Splits text into line-aligned chunks of at most `max_chars` characters.
+///
+/// A single line longer than the ceiling is cut on a char boundary so the loop
+/// always makes progress (minified files exist).
+fn chunk_lines(text: &str, max_chars: usize) -> Vec<String> {
+    let max_chars = max_chars.max(1);
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+
+    for line in text.lines() {
+        let line_chars = line.chars().count();
+        let separator = usize::from(!current.is_empty());
+        if !current.is_empty() && current.chars().count() + separator + line_chars > max_chars {
+            chunks.push(std::mem::take(&mut current));
+        }
+        if line_chars > max_chars {
+            for piece in hard_split(line, max_chars) {
+                if !current.is_empty() {
+                    chunks.push(std::mem::take(&mut current));
+                }
+                chunks.push(piece);
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+    chunks
+}
+
+fn hard_split(line: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in line.chars() {
+        current.push(ch);
+        if current.chars().count() >= max_chars {
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 /// Renders included sections in tool order, prefixed by a truncation envelope
 /// only when something was left out.
 ///
@@ -138,6 +256,53 @@ mod tests {
     }
 
     #[test]
+    fn a_section_that_fits_is_not_split() {
+        let sections = vec![section("small", 350, 100)];
+        let parts = split_section(&sections[0], 1000);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].heading, "small");
+    }
+
+    #[test]
+    fn an_oversized_section_is_split_into_labelled_parts() {
+        let body: Vec<String> = (0..200).map(|i| format!("linha {i}")).collect();
+        let section = Section {
+            heading: "symbol".to_string(),
+            body: body.join("\n"),
+            priority: 255,
+        };
+
+        let parts = split_section(&section, 100);
+        assert!(parts.len() > 1, "{parts:?}");
+        assert!(parts[0].heading.contains("parte 1/"));
+        assert!(parts.last().unwrap().heading.contains("parte 2/") || parts.len() > 2);
+
+        let reassembled = parts
+            .iter()
+            .map(|part| part.body.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(reassembled, body.join("\n"));
+    }
+
+    #[test]
+    fn splitting_a_code_fence_reopens_it_in_every_part() {
+        let body: Vec<String> = (0..200).map(|i| format!("    let x{i} = {i};")).collect();
+        let section = Section {
+            heading: "fn".to_string(),
+            body: format!("```rust\n{}\n```\n", body.join("\n")),
+            priority: 255,
+        };
+
+        let parts = split_section(&section, 80);
+        assert!(parts.len() > 1);
+        for part in &parts {
+            assert!(part.body.starts_with("```rust\n"), "{part:?}");
+            assert!(part.body.ends_with("```\n"), "{part:?}");
+        }
+    }
+
+    #[test]
     fn section_that_fits_is_not_cut() {
         // ~350 chars / 3.5 = 100 tokens, budget 200 leaves room.
         let sections = vec![section("a", 350, 100)];
@@ -154,8 +319,16 @@ mod tests {
         let sections = vec![section("low", 350, 10), section("high", 350, 200)];
         let selected = select(&sections, 150);
 
-        let included: Vec<&str> = selected.included.iter().map(|s| s.heading.as_str()).collect();
-        let omitted: Vec<&str> = selected.omitted.iter().map(|s| s.heading.as_str()).collect();
+        let included: Vec<&str> = selected
+            .included
+            .iter()
+            .map(|s| s.heading.as_str())
+            .collect();
+        let omitted: Vec<&str> = selected
+            .omitted
+            .iter()
+            .map(|s| s.heading.as_str())
+            .collect();
 
         assert_eq!(included, vec!["high"]);
         assert_eq!(omitted, vec!["low"]);
@@ -176,7 +349,10 @@ mod tests {
         let selected = select(&sections, 150);
         let rendered = render(&selected, None);
 
-        assert!(!rendered.contains("first"), "omitted section leaked: {rendered}");
+        assert!(
+            !rendered.contains("first"),
+            "omitted section leaked: {rendered}"
+        );
         // Truncated: the envelope leads, then the included body in tool order.
         assert!(rendered.contains("second"));
 

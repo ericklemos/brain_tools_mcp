@@ -23,12 +23,7 @@ impl PeekTool {
         }
     }
 
-    pub fn peek(
-        &self,
-        handle: &str,
-        offset_chars: usize,
-        budget_tokens: usize,
-    ) -> CallToolResult {
+    pub fn peek(&self, handle: &str, offset_chars: usize, budget_tokens: usize) -> CallToolResult {
         let body = match self.store.get(handle) {
             Some(body) => body,
             None => {
@@ -80,7 +75,9 @@ impl ToolPlugin for PeekTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_peek".to_string(),
-            description: "Recupera o trecho de uma resposta truncada anteriormente, paginando por offset.".to_string(),
+            description:
+                "Recupera o trecho de uma resposta truncada anteriormente, paginando por offset."
+                    .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -173,7 +170,9 @@ mod tests {
     fn paginating_with_offset_covers_the_body_without_gaps_or_overlap() {
         let t = tool();
         // 140 chars fits a 40-token page (140 chars).
-        let body: String = (0..140).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let body: String = (0..140)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
         let handle = body_of(&t, body.clone());
 
         let first = t.peek(&handle, 0, 40);
@@ -181,7 +180,11 @@ mod tests {
         assert_eq!(first_text.len(), 140);
 
         let second = t.peek(&handle, first_text.len(), 40);
-        let second_text = second.content[0].text.split("\n\nRestante:").next().unwrap();
+        let second_text = second.content[0]
+            .text
+            .split("\n\nRestante:")
+            .next()
+            .unwrap();
         assert!(second_text.is_empty());
 
         let reassembled = format!("{first_text}{second_text}");

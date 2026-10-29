@@ -71,6 +71,20 @@ impl ToolDispatcher for EmptyDispatcher {
 ///
 /// Insertion order is preserved in `order` so `tools/list` is stable across
 /// runs; a `HashMap` alone would reorder it.
+fn take_preinstalled() -> Vec<Arc<dyn ToolPlugin>> {
+    std::mem::take(&mut *PREINSTALLED.lock().unwrap())
+}
+
+/// A tool that needs something the registry does not have yet (the handle
+/// store is built before the registry in main). It waits here, and every
+/// registry created afterwards adopts it, so ordering, profile filtering and
+/// name uniqueness behave exactly as for inline plugins.
+pub fn install(plugin: Arc<dyn ToolPlugin>) {
+    PREINSTALLED.lock().unwrap().push(plugin);
+}
+
+static PREINSTALLED: std::sync::Mutex<Vec<Arc<dyn ToolPlugin>>> = std::sync::Mutex::new(Vec::new());
+
 #[derive(Default)]
 pub struct Registry {
     plugins: HashMap<&'static str, Arc<dyn ToolPlugin>>,
@@ -79,7 +93,13 @@ pub struct Registry {
 
 impl Registry {
     pub fn new() -> Self {
-        Self::default()
+        let mut registry = Self::default();
+        for plugin in take_preinstalled() {
+            registry
+                .register(plugin)
+                .expect("pre-installed tool names are unique");
+        }
+        registry
     }
 
     /// Registers a plugin, failing fast on a duplicate name.
@@ -109,8 +129,7 @@ impl Registry {
     /// profile that still answers `tools/call` would not save the schema it was
     /// meant to save, and a hidden tool is a tool the client did not negotiate.
     pub fn retain(&mut self, allowed: &[&'static str]) {
-        let allowed: std::collections::HashSet<&'static str> =
-            allowed.iter().copied().collect();
+        let allowed: std::collections::HashSet<&'static str> = allowed.iter().copied().collect();
         self.order.retain(|name| allowed.contains(name));
         self.plugins.retain(|name, _| allowed.contains(name));
     }

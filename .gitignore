@@ -5,3 +5,6 @@
 .claude/worktrees/
 .brain/shell-usage.jsonl
 .brain/shell-usage.jsonl.*
+.superpowers
+.claude
+.brain

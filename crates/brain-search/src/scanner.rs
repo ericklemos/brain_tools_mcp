@@ -53,13 +53,10 @@ impl LexicalScanner {
         }
 
         let pattern = escaped_keywords.join("|");
-        let matcher = RegexMatcher::new(&pattern)
-            .map_err(|e| BrainError::Search(format!("Invalid regex pattern: {e}")))?;
-
-        let mut searcher = SearcherBuilder::new()
-            .line_number(true)
-            .multi_line(false)
-            .build();
+        let matcher = std::sync::Arc::new(
+            RegexMatcher::new(&pattern)
+                .map_err(|e| BrainError::Search(format!("Invalid regex pattern: {e}")))?,
+        );
 
         let mut walker = WalkBuilder::new(&self.root_dir);
         walker
@@ -69,73 +66,105 @@ impl LexicalScanner {
             .git_global(true)
             .git_exclude(true);
 
-        let mut matches = Vec::new();
+        // Walking the tree is the hot path of every search. Each worker gets
+        // its own Searcher (it owns reusable buffers and is not Sync); only the
+        // result vector is shared, and its lock is held for a short extend per
+        // file.
+        let collected: std::sync::Mutex<Vec<RawMatch>> = std::sync::Mutex::new(Vec::new());
 
-        for result in walker.build() {
-            let entry = match result {
-                Ok(e) => e,
-                Err(err) => {
-                    tracing::debug!(error = %err, "Error reading directory entry");
-                    continue;
+        walker.build_parallel().run(|| {
+            let matcher = matcher.clone();
+            let mut searcher = SearcherBuilder::new()
+                .line_number(true)
+                .multi_line(false)
+                .build();
+            let collected = &collected;
+
+            Box::new(move |result| {
+                let entry = match result {
+                    Ok(e) => e,
+                    Err(err) => {
+                        tracing::debug!(error = %err, "Error reading directory entry");
+                        return ignore::WalkState::Continue;
+                    }
+                };
+
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    return ignore::WalkState::Continue;
                 }
-            };
 
-            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                continue;
-            }
-
-            let path = entry.path();
-            let path_str = path.to_string_lossy();
-            if path_str.contains("/target/")
-                || path_str.contains("/build/")
-                || path_str.contains("/.gradle/")
-                || path_str.contains("/node_modules/")
-                || path_str.contains("/.git/")
-            {
-                continue;
-            }
-
-            let mut file_matches = Vec::new();
-
-            struct MatchCollector<'a> {
-                matches: &'a mut Vec<RawMatch>,
-                file_path: &'a Path,
-            }
-
-            impl<'a> Sink for MatchCollector<'a> {
-                type Error = std::io::Error;
-
-                fn matched(
-                    &mut self,
-                    _searcher: &grep_searcher::Searcher,
-                    mat: &SinkMatch<'_>,
-                ) -> std::result::Result<bool, Self::Error> {
-                    let line_number = mat.line_number().unwrap_or(1) as usize;
-                    let line_content = String::from_utf8_lossy(mat.bytes()).to_string();
-                    let byte_offset = mat.absolute_byte_offset();
-
-                    self.matches.push(RawMatch {
-                        file_path: self.file_path.to_path_buf(),
-                        line_number,
-                        byte_offset,
-                        line_content,
-                    });
-
-                    Ok(true)
+                let path = entry.path();
+                let path_str = path.to_string_lossy();
+                if path_str.contains("/target/")
+                    || path_str.contains("/build/")
+                    || path_str.contains("/.gradle/")
+                    || path_str.contains("/node_modules/")
+                    || path_str.contains("/.git/")
+                {
+                    return ignore::WalkState::Continue;
                 }
-            }
 
-            let mut sink = MatchCollector {
-                matches: &mut file_matches,
-                file_path: path,
-            };
+                let mut file_matches = Vec::new();
 
-            if let Err(e) = searcher.search_path(&matcher, path, &mut sink) {
-                tracing::debug!(path = %path.display(), error = %e, "Failed to search file");
-            } else {
-                matches.extend(file_matches);
-            }
-        }
+                struct MatchCollector<'a> {
+                    matches: &'a mut Vec<RawMatch>,
+                    file_path: &'a Path,
+                }
+
+                impl<'a> Sink for MatchCollector<'a> {
+                    type Error = std::io::Error;
+
+                    fn matched(
+                        &mut self,
+                        _searcher: &grep_searcher::Searcher,
+                        mat: &SinkMatch<'_>,
+                    ) -> std::result::Result<bool, Self::Error> {
+                        let line_number = mat.line_number().unwrap_or(1) as usize;
+                        let line_content = String::from_utf8_lossy(mat.bytes()).to_string();
+                        let byte_offset = mat.absolute_byte_offset();
+
+                        self.matches.push(RawMatch {
+                            file_path: self.file_path.to_path_buf(),
+                            line_number,
+                            byte_offset,
+                            line_content,
+                        });
+
+                        Ok(true)
+                    }
+                }
+
+                let sink = MatchCollector {
+                    matches: &mut file_matches,
+                    file_path: path,
+                };
+
+                if let Err(err) = searcher.search_path(&*matcher, path, sink) {
+                    tracing::debug!(path = %path.display(), error = %err, "Error searching file");
+                }
+
+                if !file_matches.is_empty() {
+                    collected
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend(file_matches);
+                }
+
+                ignore::WalkState::Continue
+            })
+        });
+
+        let mut matches = collected
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // Parallel walking has no stable order; sorting keeps brain_search
+        // (and the bench baseline) reproducible for the same tree.
+        matches.sort_by(|a, b| {
+            a.file_path
+                .cmp(&b.file_path)
+                .then_with(|| a.line_number.cmp(&b.line_number))
+        });
 
         Ok(matches)
     }

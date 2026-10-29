@@ -387,7 +387,11 @@ pub fn live_handle(
 
 /// Byte range of the 1-based `start_line..=end_line` span, matching the line
 /// numbers a snippet reports.
-pub fn line_span(content: &str, start_line: usize, end_line: usize) -> Option<std::ops::Range<usize>> {
+pub fn line_span(
+    content: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Option<std::ops::Range<usize>> {
     if start_line == 0 || end_line < start_line {
         return None;
     }

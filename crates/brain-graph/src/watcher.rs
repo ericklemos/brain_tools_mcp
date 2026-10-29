@@ -44,17 +44,29 @@ impl GraphWatcher {
 
         let root_clone = root_dir.clone();
         tokio::spawn(async move {
-            while let Some(path) = rx.recv().await {
+            while let Some(first) = rx.recv().await {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+                // One save often touches several files. Draining and deduping
+                // the queue means the batch below pays for a single write lock
+                // instead of one per event (and a rebuild per event).
+                let mut batch = std::collections::BTreeSet::new();
+                batch.insert(first);
+                while let Ok(path) = rx.try_recv() {
+                    batch.insert(path);
+                }
+
                 let mut lock = graph.write().await;
-                match builder.update_file(&mut lock, &path, &root_clone) {
-                    Ok(changed) => {
-                        if changed {
-                            tracing::info!(path = %path.display(), "Graph incrementally updated");
+                for path in batch {
+                    match builder.update_file(&mut lock, &path, &root_clone) {
+                        Ok(changed) => {
+                            if changed {
+                                tracing::info!(path = %path.display(), "Graph incrementally updated");
+                            }
                         }
-                    }
-                    Err(e) => {
-                        tracing::debug!(path = %path.display(), error = %e, "Incremental update error");
+                        Err(e) => {
+                            tracing::debug!(path = %path.display(), error = %e, "Incremental update error");
+                        }
                     }
                 }
             }

@@ -88,6 +88,9 @@ async fn main() -> anyhow::Result<()> {
             "brain_shell usage log enabled"
         );
     }
+    // Parsed once by the graph, reused by search and read: the second parse
+    // of a matched file was the dominant cost of a search.
+    let parse_cache = Arc::new(brain_kernel::parse_cache::ParseCache::new());
     let search_handler = Arc::new(
         SearchHandler::new(
             &config.root_dir,
@@ -96,11 +99,12 @@ async fn main() -> anyhow::Result<()> {
             config.default_min_confidence,
         )
         .with_budget(store.clone(), config.default_budget_tokens)
-        .with_deliveries(deliveries.clone()),
+        .with_deliveries(deliveries.clone())
+        .with_parse_cache(parse_cache.clone()),
     );
 
     // Initialize in-memory CodeGraph and Watcher
-    let graph_builder = Arc::new(GraphBuilder::new()?);
+    let graph_builder = Arc::new(GraphBuilder::new()?.with_parse_cache(parse_cache.clone()));
     let code_graph = Arc::new(RwLock::new(graph_builder.build_graph(&config.root_dir)?));
 
     let _watcher = GraphWatcher::start(

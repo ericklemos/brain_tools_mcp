@@ -51,8 +51,13 @@ impl MapTool {
             Err(e) => return CallToolResult::error(format!("Invalid arguments: {e}")),
         };
 
-        let lock = self.graph.read().await;
-        let sections = self.sections(&lock, params.path.as_deref());
+        // Sections own their strings, so the read guard is released before the
+        // budget pass and the render: the watcher's writer is never blocked by
+        // formatting.
+        let sections = {
+            let lock = self.graph.read().await;
+            self.sections(&lock, params.path.as_deref())
+        };
         if sections.is_empty() {
             let subject = params
                 .path

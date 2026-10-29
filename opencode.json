@@ -5,16 +5,31 @@
       "brain-tools": {
         "type": "local",
         "command": [
-          "/home/desktop/Documents/projects/brain_tools/target/release/brain-tools",
-          "--model-path",
-          "/home/desktop/Documents/projects/brain_tools/models/vllm-d3-edge-Q8_0.gguf",
-          "--gpu-layers",
-          "33"
+          "/home/desktop/Documents/projects/brain_tools/target/release/brain-tools"
         ],
         "environment": {
           "RUST_LOG": "info"
         }
       }
+    }
+  },
+  "agents": {
+    "brain-only": {
+      "description": "use o MCP brain-tools para todo tipo de operacao",
+      "mode": "primary",
+      "permissions": [
+        { "action": "read", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "*", "effect": "deny" },
+        { "action": "glob", "resource": "*", "effect": "deny" },
+        { "action": "grep", "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "*", "effect": "deny" },
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "external_directory", "resource": "*", "effect": "deny" },
+        { "action": "execute", "resource": "*", "effect": "allow" },
+        { "action": "brain-tools_*", "resource": "*", "effect": "allow" },
+        { "action": "opencode_list_mcp_resources", "resource": "*", "effect": "allow" },
+        { "action": "opencode_read_mcp_resource", "resource": "brain-tools:*", "effect": "allow" }
+      ]
     }
   }
 }

@@ -46,6 +46,11 @@ pub enum SearchDetail {
 /// whole result set the agent has not chosen yet.
 const MAX_FULL_BODIES_IN_AUTO: usize = 2;
 
+/// A search result is a summary, not the whole symbol. The cap keeps one huge
+/// function from crowding out the rest of the result set; the marker tells the
+/// agent to ask `brain_read` for the full body, which has no cap.
+const MAX_SEARCH_BODY_LINES: usize = 80;
+
 pub struct SearchHandler {
     root_dir: PathBuf,
     scanner: LexicalScanner,
@@ -91,6 +96,12 @@ impl SearchHandler {
         self.ledger = ledger;
         self
     }
+
+    /// Shares the graph's parse trees; repeated searches become digest hits.
+    pub fn with_parse_cache(mut self, cache: Arc<brain_kernel::parse_cache::ParseCache>) -> Self {
+        self.chunker = AstChunker::with_cache(cache);
+        self
+    }
 }
 
 impl SearchHandler {
@@ -123,7 +134,9 @@ impl SearchHandler {
     pub async fn handle_brain_search(&self, arguments: serde_json::Value) -> CallToolResult {
         let params: BrainSearchParams = match serde_json::from_value(arguments) {
             Ok(p) => p,
-            Err(e) => return CallToolResult::error(format!("Invalid arguments for brain_search: {e}")),
+            Err(e) => {
+                return CallToolResult::error(format!("Invalid arguments for brain_search: {e}"))
+            }
         };
 
         let max_results = params.max_results.unwrap_or(self.default_max_results);
@@ -147,26 +160,98 @@ impl SearchHandler {
 
         let mut file_matches: HashMap<PathBuf, Vec<usize>> = HashMap::new();
         for m in matches {
-            file_matches.entry(m.file_path).or_default().push(m.line_number);
+            file_matches
+                .entry(m.file_path)
+                .or_default()
+                .push(m.line_number);
         }
 
-        let mut candidates = Vec::new();
-        for (file_path, lines) in file_matches {
-            let content = match std::fs::read_to_string(&file_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::debug!(path = %file_path.display(), error = %e, "Could not read file for AST parsing");
-                    continue;
-                }
-            };
+        // Reading and tree-sitter parsing are blocking and independent per
+        // file: they run on a bounded worker set inside `spawn_blocking` so the
+        // async reactor is never stalled. The shared parse cache turns files
+        // the graph already parsed into digest hits instead of second parses.
+        let mut ordered_files: Vec<(PathBuf, Vec<usize>)> = file_matches.into_iter().collect();
+        ordered_files.sort_by(|a, b| a.0.cmp(&b.0));
 
-            match self.chunker.extract_snippets(&file_path, &content, &lines) {
-                Ok(snippets) => candidates.extend(snippets),
-                Err(e) => {
-                    tracing::debug!(path = %file_path.display(), error = %e, "AST snippet extraction error");
-                }
+        let chunker = self.chunker.clone();
+        let candidates = match tokio::task::spawn_blocking(move || {
+            if ordered_files.is_empty() {
+                return Vec::new();
             }
-        }
+
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .min(ordered_files.len());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let mut buckets: Vec<Vec<brain_kernel::ast::AstSnippet>> =
+                Vec::with_capacity(workers);
+
+            // One queue, not fixed chunks: a single huge file cannot become
+            // the tail while other workers idle.
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers);
+                for _ in 0..workers {
+                    let chunker = &chunker;
+                    let ordered_files = &ordered_files;
+                    let next = &next;
+                    handles.push(scope.spawn(move || {
+                        // One parser per worker: `set_language` is not free.
+                        let mut worker = brain_kernel::parse_cache::ParseWorker::new();
+                        let mut snippets = Vec::new();
+                        loop {
+                            let index =
+                                next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((file_path, lines)) = ordered_files.get(index) else {
+                                break;
+                            };
+                            let content = match std::fs::read_to_string(file_path) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    tracing::debug!(path = %file_path.display(), error = %e, "Could not read file for AST parsing");
+                                    continue;
+                                }
+                            };
+
+                            match chunker.extract_snippets_limited_with(
+                                &mut worker,
+                                file_path,
+                                &content,
+                                lines,
+                                Some(MAX_SEARCH_BODY_LINES),
+                            ) {
+                                Ok(mut found) => snippets.append(&mut found),
+                                Err(e) => {
+                                    tracing::debug!(path = %file_path.display(), error = %e, "AST snippet extraction error");
+                                }
+                            }
+                        }
+                        snippets
+                    }));
+                }
+                for handle in handles {
+                    buckets.push(handle.join().unwrap_or_default());
+                }
+            });
+
+            let mut snippets: Vec<brain_kernel::ast::AstSnippet> =
+                buckets.into_iter().flatten().collect();
+            // Worker completion order is not deterministic; the response must
+            // be, and ranking keeps ties in input order.
+            snippets.sort_by(|a, b| {
+                a.file_path
+                    .cmp(&b.file_path)
+                    .then(a.start_line.cmp(&b.start_line))
+            });
+            snippets
+        })
+        .await
+        {
+            Ok(snippets) => snippets,
+            Err(e) => {
+                return CallToolResult::error(format!("AST extraction failed: {e}"));
+            }
+        };
 
         if candidates.is_empty() {
             return CallToolResult::text("Termos encontrados, porém nenhum bloco de código AST (Rust/Kotlin) pôde ser delimitado.");
@@ -257,8 +342,7 @@ impl SearchHandler {
                 SearchDetail::Signatures => false,
                 SearchDetail::Auto => {
                     full_bodies < MAX_FULL_BODIES_IN_AUTO
-                        && (full_bodies == 0
-                            || full_tokens + code_tokens <= budget_tokens * 2 / 3)
+                        && (full_bodies == 0 || full_tokens + code_tokens <= budget_tokens * 2 / 3)
                 }
             };
 
@@ -292,12 +376,7 @@ impl SearchHandler {
             }
             body.push_str(&format!("```{}\n{}\n```\n\n", lang, snippet.code));
 
-            let pending = self.apply_ledger(
-                snippet,
-                &mut contents,
-                &mut body,
-                repeat_allowed,
-            );
+            let pending = self.apply_ledger(snippet, &mut contents, &mut body, repeat_allowed);
 
             rendered.push(Rendered {
                 section: Section {
@@ -316,9 +395,7 @@ impl SearchHandler {
             .collect();
 
         let signature_note = if signature_only > 0 {
-            format!(
-                "> {signature_only} resultado(s) só com assinatura — use `brain_read` para o corpo.\n\n"
-            )
+            format!("> {signature_only} resultado(s) só com assinatura.\n\n")
         } else {
             String::new()
         };
@@ -326,7 +403,7 @@ impl SearchHandler {
         if self.store.is_none() {
             // No store configured: render everything, as before this contract.
             let mut out = format!(
-                "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n{}",
+                "### Resultados da Busca\n{}\n\n{}",
                 completeness, signature_note
             );
             for section in &sections {
@@ -352,7 +429,7 @@ impl SearchHandler {
         self.settle(&rendered, &selection);
 
         let mut out = format!(
-            "### Resultados da Busca\n{}\n\n> Trecho verbatim (corpo completo do símbolo).\n\n{}",
+            "### Resultados da Busca\n{}\n\n{}",
             completeness, signature_note
         );
         out.push_str(&budget::render(&selection, handle.as_deref()));
@@ -408,8 +485,7 @@ impl SearchHandler {
         match verdict {
             Verdict::Seen(seen) => {
                 let store = self.store.as_ref()?;
-                let handle =
-                    deliveries::live_handle(store, ledger, &seen, &snippet.file_path, &id);
+                let handle = deliveries::live_handle(store, ledger, &seen, &snippet.file_path, &id);
                 *body = deliveries::pointer_body(&seen, &handle);
                 Some(Pending {
                     omitted: true,
@@ -489,12 +565,12 @@ fn completeness_line(
             "blocos aprovados"
         };
         format!(
-            "{} de {} {} — o teto max_results={} cortou o resto; aumente max_results para ver mais.",
+            "{} de {} {} — max_results={} cortou o resto.",
             shown, approved_total, noun, max_results
         )
     } else if shown < considered {
         format!(
-            "{} de {} candidatas casaram com a query — as demais não são o código pedido.",
+            "{} de {} candidatas casaram com a query.",
             shown, considered
         )
     } else {
@@ -504,21 +580,17 @@ fn completeness_line(
     let mut line = format!("#### {verdict}");
 
     if skipped > 0 {
-        line.push_str(&format!(
-            " {} de {} candidatas não puderam ser julgadas pelo modelo.",
-            skipped, considered
-        ));
+        line.push_str(&format!(" {skipped} de {considered} não julgadas."));
     }
 
     if considered < candidate_count {
         line.push_str(&format!(
-            " {} de {} candidatas avaliadas — o teto de validação cortou o resto.",
-            considered, candidate_count
+            " {considered} de {candidate_count} avaliadas (teto)."
         ));
     }
 
     if lexical_fallback {
-        line.push_str(" Validação semântica indisponível — ranking lexical.");
+        line.push_str(" lexical.");
     }
 
     line
@@ -556,240 +628,250 @@ mod tests {
         assert_eq!(p.schema().name, "brain_search");
     }
 
-#[tokio::test]
-async fn search_honours_budget_and_leaves_the_rest_in_the_store() {
-    let dir = tempdir().unwrap();
-    let root = dir.path();
-    let src = root.join("src");
-    fs::create_dir_all(&src).unwrap();
+    #[tokio::test]
+    async fn search_honours_budget_and_leaves_the_rest_in_the_store() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
 
-    // Two large functions so a small budget cannot hold both.
-    for name in ["alpha_handler", "beta_handler"] {
-        let body = format!(
-            "pub fn {name}(input: &str) -> String {{\n{}\n    input.to_string()\n}}\n",
-            "    let _ = input.len();\n".repeat(40)
-        );
-        fs::write(src.join(format!("{name}.rs")), body).unwrap();
-    }
-
-    let validator = ValidationClient::new(None, 0);
-    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
-    let handler = SearchHandler::new(root, validator, 5, 0.0)
-        .with_budget(store.clone(), 200);
-
-    let out = handler
-        .handle_brain_search(serde_json::json!({
-            "natural_query": "handler",
-            "keywords": ["handler"]
-        }))
-        .await;
-
-    let text = &out.content[0].text;
-    assert!(text.contains("Resposta truncada"), "expected truncation: {text}");
-    assert!(
-        text.contains("brain_peek"),
-        "envelope must say how to recover: {text}"
-    );
-
-    let handle = text
-        .split("handle: `")
-        .nth(1)
-        .and_then(|s| s.split('`').next())
-        .expect("handle in envelope");
-    assert!(store.get(handle).is_some(), "handle must resolve in the store");
-}
-
-#[tokio::test]
-async fn automatic_detail_switches_to_signatures_after_two_bodies() {
-    let dir = tempdir().unwrap();
-    let root = dir.path();
-    for name in ["handler_a", "handler_b", "handler_c"] {
-        fs::write(
-            root.join(format!("{name}.rs")),
-            format!("pub fn {name}() -> u8 {{\n    1\n}}\n"),
-        )
-        .unwrap();
-    }
-
-    let validator = ValidationClient::new(None, 0);
-    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
-    let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
-
-    let search = |args: serde_json::Value| {
-        let handler = &handler;
-        async move {
-            handler
-                .handle_brain_search(args)
-                .await
-                .content[0]
-                .text
-                .clone()
+        // Two large functions so a small budget cannot hold both.
+        for name in ["alpha_handler", "beta_handler"] {
+            let body = format!(
+                "pub fn {name}(input: &str) -> String {{\n{}\n    input.to_string()\n}}\n",
+                "    let _ = input.len();\n".repeat(40)
+            );
+            fs::write(src.join(format!("{name}.rs")), body).unwrap();
         }
-    };
 
-    let auto = search(serde_json::json!({
-        "natural_query": "handler",
-        "keywords": ["handler"]
-    }))
-    .await;
-    assert_eq!(auto.matches("```rust").count(), 2, "{auto}");
-    assert!(auto.contains("1 resultado(s) só com assinatura"), "{auto}");
-    assert!(auto.contains("pub fn handler_"), "signatures remain: {auto}");
+        let validator = ValidationClient::new(None, 0);
+        let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+        let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store.clone(), 200);
 
-    let signatures = search(serde_json::json!({
-        "natural_query": "handler",
-        "keywords": ["handler"],
-        "detail": "signatures"
-    }))
-    .await;
-    assert!(!signatures.contains("```rust"), "{signatures}");
-    assert!(
-        signatures.contains("3 resultado(s) só com assinatura"),
-        "{signatures}"
-    );
+        let out = handler
+            .handle_brain_search(serde_json::json!({
+                "natural_query": "handler",
+                "keywords": ["handler"]
+            }))
+            .await;
 
-    let full = search(serde_json::json!({
-        "natural_query": "handler",
-        "keywords": ["handler"],
-        "detail": "full",
-        "repeat": "allow"
-    }))
-    .await;
-    assert_eq!(full.matches("```rust").count(), 3, "{full}");
-    assert!(!full.contains("só com assinatura"), "{full}");
-}
+        let text = &out.content[0].text;
+        assert!(
+            text.contains("Resposta truncada"),
+            "expected truncation: {text}"
+        );
+        assert!(
+            text.contains("brain_peek"),
+            "envelope must say how to recover: {text}"
+        );
 
-#[tokio::test]
-async fn response_declares_completeness_and_carries_no_fake_confidence() {
-    let dir = tempdir().unwrap();
-    let root = dir.path();
-    let src = root.join("src");
-    fs::create_dir_all(&src).unwrap();
-    fs::write(
-        src.join("auth.rs"),
-        "pub fn verify_jwt_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
-    )
-    .unwrap();
-
-    let validator = ValidationClient::new(None, 0);
-    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
-    let handler =
-        SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
-
-    let out = handler
-        .handle_brain_search(serde_json::json!({
-            "natural_query": "jwt token",
-            "keywords": ["verify_jwt_token"]
-        }))
-        .await;
-
-    let text = &out.content[0].text;
-    // The completeness claim is what licenses the agent to stop verifying.
-    assert!(text.contains("candidatas casaram com a query"), "{text}");
-    assert!(text.contains("Trecho verbatim"), "{text}");
-    // The signature is the opening of the code block; it must not be printed twice.
-    assert_eq!(
-        text.matches("pub fn verify_jwt_token").count(),
-        1,
-        "signature duplicated above the body: {text}"
-    );
-    assert!(!text.contains("Assinatura"), "{text}");
-    // The number is a relative rank, not a probability: it must not read as one.
-    assert!(!text.contains("Confiança:"), "relative rank leaked as confidence: {text}");
-}
-
-#[tokio::test]
-async fn a_max_results_cut_is_declared_instead_of_looking_complete() {
-    let dir = tempdir().unwrap();
-    let root = dir.path();
-    let src = root.join("src");
-    fs::create_dir_all(&src).unwrap();
-    for name in ["handler_a", "handler_b", "handler_c", "handler_d"] {
-        fs::write(
-            src.join(format!("{name}.rs")),
-            format!("pub fn {name}() -> u8 {{ 1 }}\n"),
-        )
-        .unwrap();
+        let handle = text
+            .split("handle: `")
+            .nth(1)
+            .and_then(|s| s.split('`').next())
+            .expect("handle in envelope");
+        assert!(
+            store.get(handle).is_some(),
+            "handle must resolve in the store"
+        );
     }
 
-    let validator = ValidationClient::new(None, 0);
-    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
-    let handler = SearchHandler::new(root, validator, 2, 0.0).with_budget(store, 100_000);
+    #[tokio::test]
+    async fn automatic_detail_switches_to_signatures_after_two_bodies() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for name in ["handler_a", "handler_b", "handler_c"] {
+            fs::write(
+                root.join(format!("{name}.rs")),
+                format!("pub fn {name}() -> u8 {{\n    1\n}}\n"),
+            )
+            .unwrap();
+        }
 
-    let out = handler
-        .handle_brain_search(serde_json::json!({
+        let validator = ValidationClient::new(None, 0);
+        let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+        let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
+
+        let search = |args: serde_json::Value| {
+            let handler = &handler;
+            async move {
+                handler.handle_brain_search(args).await.content[0]
+                    .text
+                    .clone()
+            }
+        };
+
+        let auto = search(serde_json::json!({
             "natural_query": "handler",
             "keywords": ["handler"]
         }))
         .await;
+        assert_eq!(auto.matches("```rust").count(), 2, "{auto}");
+        assert!(auto.contains("1 resultado(s) só com assinatura"), "{auto}");
+        assert!(
+            auto.contains("pub fn handler_"),
+            "signatures remain: {auto}"
+        );
 
-    let text = &out.content[0].text;
-    assert!(
-        text.contains("teto max_results=2 cortou o resto"),
-        "a capped response must say so: {text}"
-    );
-}
-
-#[tokio::test]
-async fn search_with_a_generous_budget_is_unchanged() {
-    let dir = tempdir().unwrap();
-    let root = dir.path();
-    let src = root.join("src");
-    fs::create_dir_all(&src).unwrap();
-    fs::write(
-        src.join("auth.rs"),
-        "pub fn verify_jwt_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
-    )
-    .unwrap();
-
-    let validator = ValidationClient::new(None, 0);
-    let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
-    let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
-
-    let out = handler
-        .handle_brain_search(serde_json::json!({
-            "natural_query": "jwt token",
-            "keywords": ["verify_jwt_token"]
+        let signatures = search(serde_json::json!({
+            "natural_query": "handler",
+            "keywords": ["handler"],
+            "detail": "signatures"
         }))
         .await;
+        assert!(!signatures.contains("```rust"), "{signatures}");
+        assert!(
+            signatures.contains("3 resultado(s) só com assinatura"),
+            "{signatures}"
+        );
 
-    let text = &out.content[0].text;
-    assert!(!text.contains("Resposta truncada"));
-    assert!(text.contains("verify_jwt_token"));
-    assert!(text.contains("pub fn verify_jwt_token"));
-}
+        let full = search(serde_json::json!({
+            "natural_query": "handler",
+            "keywords": ["handler"],
+            "detail": "full",
+            "repeat": "allow"
+        }))
+        .await;
+        assert_eq!(full.matches("```rust").count(), 3, "{full}");
+        assert!(!full.contains("só com assinatura"), "{full}");
+    }
 
-#[test]
-fn a_lexical_fallback_is_announced_instead_of_pretending_validation_happened() {
-    let text = completeness_line(1, 1, 1, 5, 1, 0, true);
-    assert!(
-        text.contains("Validação semântica indisponível"),
-        "a lexical decision must not read as semantic validation: {text}"
-    );
-    assert!(text.contains("candidatas casaram com a query"));
-}
+    #[tokio::test]
+    async fn response_declares_completeness_and_carries_no_fake_confidence() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("auth.rs"),
+            "pub fn verify_jwt_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
+        )
+        .unwrap();
 
-#[test]
-fn partially_skipped_candidates_are_declared() {
-    let text = completeness_line(5, 3, 3, 5, 5, 2, false);
-    assert!(
-        text.contains("2 de 5 candidatas não puderam ser julgadas"),
-        "skipped candidates must be visible: {text}"
-    );
-    assert!(text.contains("3 de 5 candidatas casaram com a query"));
-}
+        let validator = ValidationClient::new(None, 0);
+        let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+        let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
 
-#[test]
-fn the_validation_cap_is_declared_separately_from_max_results() {
-    let text = completeness_line(100, 5, 5, 5, 24, 0, false);
-    assert!(
-        text.contains("24 de 100 candidatas avaliadas"),
-        "the validation cap must not look like a model judgement: {text}"
-    );
-    assert!(text.contains("5 de 24 candidatas casaram com a query"));
-}
+        let out = handler
+            .handle_brain_search(serde_json::json!({
+                "natural_query": "jwt token",
+                "keywords": ["verify_jwt_token"]
+            }))
+            .await;
 
-    fn ledger_handler(root: &std::path::Path, ledger: Arc<DeliveryLedger>) -> (SearchHandler, Arc<ResponseStore>) {
+        let text = &out.content[0].text;
+        // The completeness claim is what licenses the agent to stop verifying.
+        assert!(text.contains("candidatas casaram com a query"), "{text}");
+        assert!(text.contains("```rust"), "the body is verbatim: {text}");
+        // The signature is the opening of the code block; it must not be printed twice.
+        assert_eq!(
+            text.matches("pub fn verify_jwt_token").count(),
+            1,
+            "signature duplicated above the body: {text}"
+        );
+        assert!(!text.contains("Assinatura"), "{text}");
+        // The number is a relative rank, not a probability: it must not read as one.
+        assert!(
+            !text.contains("Confiança:"),
+            "relative rank leaked as confidence: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_max_results_cut_is_declared_instead_of_looking_complete() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        for name in ["handler_a", "handler_b", "handler_c", "handler_d"] {
+            fs::write(
+                src.join(format!("{name}.rs")),
+                format!("pub fn {name}() -> u8 {{ 1 }}\n"),
+            )
+            .unwrap();
+        }
+
+        let validator = ValidationClient::new(None, 0);
+        let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+        let handler = SearchHandler::new(root, validator, 2, 0.0).with_budget(store, 100_000);
+
+        let out = handler
+            .handle_brain_search(serde_json::json!({
+                "natural_query": "handler",
+                "keywords": ["handler"]
+            }))
+            .await;
+
+        let text = &out.content[0].text;
+        assert!(
+            text.contains("max_results=2 cortou o resto"),
+            "a capped response must say so: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_with_a_generous_budget_is_unchanged() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("auth.rs"),
+            "pub fn verify_jwt_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
+        )
+        .unwrap();
+
+        let validator = ValidationClient::new(None, 0);
+        let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
+        let handler = SearchHandler::new(root, validator, 5, 0.0).with_budget(store, 100_000);
+
+        let out = handler
+            .handle_brain_search(serde_json::json!({
+                "natural_query": "jwt token",
+                "keywords": ["verify_jwt_token"]
+            }))
+            .await;
+
+        let text = &out.content[0].text;
+        assert!(!text.contains("Resposta truncada"));
+        assert!(text.contains("verify_jwt_token"));
+        assert!(text.contains("pub fn verify_jwt_token"));
+    }
+
+    #[test]
+    fn a_lexical_fallback_is_announced_instead_of_pretending_validation_happened() {
+        let text = completeness_line(1, 1, 1, 5, 1, 0, true);
+        assert!(
+            text.contains("lexical"),
+            "a lexical decision must not read as semantic validation: {text}"
+        );
+        assert!(text.contains("candidatas casaram com a query"));
+    }
+
+    #[test]
+    fn partially_skipped_candidates_are_declared() {
+        let text = completeness_line(5, 3, 3, 5, 5, 2, false);
+        assert!(
+            text.contains("2 de 5 não julgadas"),
+            "skipped candidates must be visible: {text}"
+        );
+        assert!(text.contains("3 de 5 candidatas casaram com a query"));
+    }
+
+    #[test]
+    fn the_validation_cap_is_declared_separately_from_max_results() {
+        let text = completeness_line(100, 5, 5, 5, 24, 0, false);
+        assert!(
+            text.contains("24 de 100 avaliadas (teto)"),
+            "the validation cap must not look like a model judgement: {text}"
+        );
+        assert!(text.contains("5 de 24 candidatas casaram com a query"));
+    }
+
+    fn ledger_handler(
+        root: &std::path::Path,
+        ledger: Arc<DeliveryLedger>,
+    ) -> (SearchHandler, Arc<ResponseStore>) {
         let validator = ValidationClient::new(None, 0);
         let store = Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024));
         let handler = SearchHandler::new(root, validator, 5, 0.0)
@@ -811,11 +893,16 @@ fn the_validation_cap_is_declared_separately_from_max_results() {
         let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
         let (handler, store) = ledger_handler(root, ledger);
 
-        let args = || serde_json::json!({ "natural_query": "verify token", "keywords": ["verify_token"] });
-        let first = handler.handle_brain_search(args()).await.content[0].text.clone();
+        let args =
+            || serde_json::json!({ "natural_query": "verify token", "keywords": ["verify_token"] });
+        let first = handler.handle_brain_search(args()).await.content[0]
+            .text
+            .clone();
         assert!(first.contains("!raw.is_empty()"), "{first}");
 
-        let second = handler.handle_brain_search(args()).await.content[0].text.clone();
+        let second = handler.handle_brain_search(args()).await.content[0]
+            .text
+            .clone();
         assert!(second.contains("Já entregue nesta sessão"), "{second}");
         assert!(!second.contains("!raw.is_empty()"), "{second}");
 
@@ -832,16 +919,27 @@ fn the_validation_cap_is_declared_separately_from_max_results() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let file = root.join("auth.rs");
-        fs::write(&file, "pub fn verify_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n").unwrap();
+        fs::write(
+            &file,
+            "pub fn verify_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
+        )
+        .unwrap();
 
         let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
         let (handler, _) = ledger_handler(root, ledger);
-        let args = || serde_json::json!({ "natural_query": "verify token", "keywords": ["verify_token"] });
+        let args =
+            || serde_json::json!({ "natural_query": "verify token", "keywords": ["verify_token"] });
 
         handler.handle_brain_search(args()).await;
-        fs::write(&file, "pub fn verify_token(raw: &str) -> bool {\n    !raw.trim().is_empty()\n}\n").unwrap();
+        fs::write(
+            &file,
+            "pub fn verify_token(raw: &str) -> bool {\n    !raw.trim().is_empty()\n}\n",
+        )
+        .unwrap();
 
-        let second = handler.handle_brain_search(args()).await.content[0].text.clone();
+        let second = handler.handle_brain_search(args()).await.content[0]
+            .text
+            .clone();
         assert!(second.contains("Mudou desde a entrega"), "{second}");
         assert!(second.contains("+    !raw.trim().is_empty()"), "{second}");
     }
@@ -850,7 +948,11 @@ fn the_validation_cap_is_declared_separately_from_max_results() {
     async fn repeat_allow_returns_the_body_from_search() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::write(root.join("auth.rs"), "pub fn verify_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n").unwrap();
+        fs::write(
+            root.join("auth.rs"),
+            "pub fn verify_token(raw: &str) -> bool {\n    !raw.is_empty()\n}\n",
+        )
+        .unwrap();
 
         let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
         let (handler, _) = ledger_handler(root, ledger);

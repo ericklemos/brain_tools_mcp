@@ -54,27 +54,34 @@ impl TraceTool {
         };
 
         let max_depth = params.max_depth.unwrap_or(6).clamp(1, 12);
-        let graph = self.graph.read().await;
 
-        let starts = resolve(&graph, &params.from);
-        let targets = resolve(&graph, &params.to);
-        if starts.is_empty() {
-            return CallToolResult::text(format!(
-                "Símbolo `{}` não encontrado no índice.",
-                params.from
-            ));
-        }
-        if targets.is_empty() {
-            return CallToolResult::text(format!(
-                "Símbolo `{}` não encontrado no índice.",
-                params.to
-            ));
-        }
+        // The section owns its strings; drop the read guard before rendering so
+        // a long trace never prevents the watcher from writing.
+        let section = {
+            let graph = self.graph.read().await;
 
-        let target_set: HashSet<NodeIndex> = targets.into_iter().collect();
-        let section = match shortest_path(&graph, starts, &target_set, max_depth) {
-            Some((path, previous)) => found_section(&graph, &self.root_dir, &params, &path, &previous),
-            None => missing_section(&graph, &params, max_depth),
+            let starts = resolve(&graph, &params.from);
+            let targets = resolve(&graph, &params.to);
+            if starts.is_empty() {
+                return CallToolResult::text(format!(
+                    "Símbolo `{}` não encontrado no índice.",
+                    params.from
+                ));
+            }
+            if targets.is_empty() {
+                return CallToolResult::text(format!(
+                    "Símbolo `{}` não encontrado no índice.",
+                    params.to
+                ));
+            }
+
+            let target_set: HashSet<NodeIndex> = targets.into_iter().collect();
+            match shortest_path(&graph, starts, &target_set, max_depth) {
+                Some((path, previous)) => {
+                    found_section(&graph, &self.root_dir, &params, &path, &previous)
+                }
+                None => missing_section(&graph, &params, max_depth),
+            }
         };
 
         let budget_tokens = params.budget_tokens.unwrap_or(self.default_budget_tokens);
@@ -105,6 +112,7 @@ fn resolve(graph: &ProjectCodeGraph, query: &str) -> Vec<NodeIndex> {
 
 /// Breadth-first search over outgoing call edges. BFS guarantees the shortest
 /// chain, which is the one worth spending tokens on.
+#[allow(clippy::type_complexity)]
 fn shortest_path(
     graph: &ProjectCodeGraph,
     starts: Vec<NodeIndex>,

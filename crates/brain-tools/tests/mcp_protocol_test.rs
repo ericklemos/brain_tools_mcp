@@ -91,10 +91,18 @@ async fn test_mcp_stream_run_loop() {
     let server = McpServer::new(Arc::new(EmptyDispatcher));
 
     let input = b"{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"ping\"}\n";
-    let mut reader = &input[..];
-    let mut output = Vec::new();
+    let reader: &'static [u8] = &input[..];
+    // The server writes from a spawned task, so the sink must be owned
+    // ('static). A duplex buffer lets the test read the bytes back after the
+    // loop drains and drops its side.
+    let (mut client, server_writer) = tokio::io::duplex(4096);
 
-    server.run_loop(&mut reader, &mut output).await.unwrap();
+    server.run_loop(reader, server_writer).await.unwrap();
+
+    let mut output = Vec::new();
+    <tokio::io::DuplexStream as tokio::io::AsyncReadExt>::read_to_end(&mut client, &mut output)
+        .await
+        .unwrap();
 
     let output_str = String::from_utf8(output).unwrap();
     let resp: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
