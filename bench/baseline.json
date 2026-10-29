@@ -3,9 +3,9 @@
   "server": "target/release/brain-tools",
   "root": ".",
   "schema": {
-    "tools": 16,
-    "chars": 11472,
-    "tokens": 3278
+    "tools": 17,
+    "chars": 11777,
+    "tokens": 3569
   },
   "tasks": [
     {
@@ -14,23 +14,23 @@
       "calls": [
         {
           "tool": "brain_search",
-          "request_tokens": 47,
-          "response_tokens": 1460,
-          "chars": 5109,
+          "request_tokens": 50,
+          "response_tokens": 891,
+          "chars": 2938,
           "is_error": false,
-          "millis": 17726
+          "millis": 16
         }
       ],
-      "brain_tokens": 1507,
-      "brain_chars": 5109,
-      "naive_tokens": 7397,
-      "naive_bytes": 25914,
+      "brain_tokens": 941,
+      "brain_chars": 2938,
+      "naive_tokens": 11911,
+      "naive_bytes": 39356,
       "naive_files": [
         "crates/brain-graph/src/map_tool.rs",
         "crates/brain-kernel/src/budget.rs",
         "crates/brain-kernel/src/peek_tool.rs"
       ],
-      "millis": 17726
+      "millis": 16
     },
     {
       "id": "fluxo-busca-corpo",
@@ -38,31 +38,31 @@
       "calls": [
         {
           "tool": "brain_search",
-          "request_tokens": 48,
-          "response_tokens": 733,
-          "chars": 2563,
+          "request_tokens": 50,
+          "response_tokens": 796,
+          "chars": 2626,
           "is_error": false,
-          "millis": 21630
+          "millis": 8
         },
         {
           "tool": "brain_read",
-          "request_tokens": 29,
-          "response_tokens": 352,
-          "chars": 1230,
+          "request_tokens": 31,
+          "response_tokens": 483,
+          "chars": 1593,
           "is_error": false,
-          "millis": 2
+          "millis": 20
         }
       ],
-      "brain_tokens": 1162,
-      "brain_chars": 3793,
-      "naive_tokens": 14190,
-      "naive_bytes": 49725,
+      "brain_tokens": 1360,
+      "brain_chars": 4219,
+      "naive_tokens": 20825,
+      "naive_bytes": 68787,
       "naive_files": [
         "crates/brain-graph/src/map_tool.rs",
         "crates/brain-kernel/src/budget.rs",
         "crates/brain-search/src/search_tool.rs"
       ],
-      "millis": 21632
+      "millis": 28
     },
     {
       "id": "contexto-handle-diff",
@@ -70,17 +70,17 @@
       "calls": [
         {
           "tool": "brain_context_graph",
-          "request_tokens": 24,
-          "response_tokens": 464,
-          "chars": 1623,
+          "request_tokens": 25,
+          "response_tokens": 526,
+          "chars": 1734,
           "is_error": false,
           "millis": 0
         }
       ],
-      "brain_tokens": 488,
-      "brain_chars": 1623,
-      "naive_tokens": 9825,
-      "naive_bytes": 34429,
+      "brain_tokens": 551,
+      "brain_chars": 1734,
+      "naive_tokens": 12282,
+      "naive_bytes": 40570,
       "naive_files": [
         "crates/brain-graph/src/diff_tool.rs",
         "crates/brain-graph/src/graph_tool.rs",
@@ -94,16 +94,16 @@
       "calls": [
         {
           "tool": "brain_context_graph",
-          "request_tokens": 30,
-          "response_tokens": 390,
-          "chars": 1365,
+          "request_tokens": 32,
+          "response_tokens": 288,
+          "chars": 948,
           "is_error": false,
           "millis": 0
         }
       ],
-      "brain_tokens": 420,
-      "brain_chars": 1365,
-      "naive_tokens": 1536,
+      "brain_tokens": 320,
+      "brain_chars": 948,
+      "naive_tokens": 1629,
       "naive_bytes": 5375,
       "naive_files": [
         "crates/brain-kernel/src/store.rs"
@@ -116,17 +116,17 @@
       "calls": [
         {
           "tool": "brain_impact_check",
-          "request_tokens": 19,
-          "response_tokens": 2032,
-          "chars": 7110,
+          "request_tokens": 20,
+          "response_tokens": 741,
+          "chars": 2443,
           "is_error": false,
           "millis": 0
         }
       ],
-      "brain_tokens": 2051,
-      "brain_chars": 7110,
-      "naive_tokens": 29471,
-      "naive_bytes": 103289,
+      "brain_tokens": 761,
+      "brain_chars": 2443,
+      "naive_tokens": 38641,
+      "naive_bytes": 127654,
       "naive_files": [
         "crates/brain-exec/src/exec_tool.rs",
         "crates/brain-graph/src/diff_tool.rs",
@@ -143,21 +143,21 @@
       "calls": [
         {
           "tool": "brain_read",
-          "request_tokens": 23,
-          "response_tokens": 80,
+          "request_tokens": 24,
+          "response_tokens": 84,
           "chars": 277,
           "is_error": false,
-          "millis": 0
+          "millis": 1
         }
       ],
-      "brain_tokens": 103,
+      "brain_tokens": 108,
       "brain_chars": 277,
-      "naive_tokens": 686,
-      "naive_bytes": 2400,
+      "naive_tokens": 892,
+      "naive_bytes": 2942,
       "naive_files": [
         "crates/brain-graph/src/watcher.rs"
       ],
-      "millis": 0
+      "millis": 1
     },
     {
       "id": "esqueleto-arquivo-grande",
@@ -165,21 +165,21 @@
       "calls": [
         {
           "tool": "brain_read",
-          "request_tokens": 22,
-          "response_tokens": 1147,
+          "request_tokens": 24,
+          "response_tokens": 1217,
           "chars": 4013,
           "is_error": false,
-          "millis": 5
+          "millis": 16
         }
       ],
-      "brain_tokens": 1169,
+      "brain_tokens": 1241,
       "brain_chars": 4013,
-      "naive_tokens": 9385,
+      "naive_tokens": 9954,
       "naive_bytes": 32877,
       "naive_files": [
         "crates/brain-graph/src/scope.rs"
       ],
-      "millis": 5
+      "millis": 16
     },
     {
       "id": "corpo-select",
@@ -187,21 +187,21 @@
       "calls": [
         {
           "tool": "brain_read",
-          "request_tokens": 28,
-          "response_tokens": 281,
+          "request_tokens": 30,
+          "response_tokens": 298,
           "chars": 981,
           "is_error": false,
-          "millis": 2
+          "millis": 10
         }
       ],
-      "brain_tokens": 309,
+      "brain_tokens": 328,
       "brain_chars": 981,
-      "naive_tokens": 2388,
-      "naive_bytes": 8363,
+      "naive_tokens": 4318,
+      "naive_bytes": 14257,
       "naive_files": [
         "crates/brain-kernel/src/budget.rs"
       ],
-      "millis": 2
+      "millis": 10
     },
     {
       "id": "mapa-grafo",
@@ -209,17 +209,17 @@
       "calls": [
         {
           "tool": "brain_map",
-          "request_tokens": 18,
-          "response_tokens": 2018,
-          "chars": 7062,
+          "request_tokens": 19,
+          "response_tokens": 2033,
+          "chars": 6707,
           "is_error": false,
           "millis": 0
         }
       ],
-      "brain_tokens": 2036,
-      "brain_chars": 7062,
-      "naive_tokens": 76284,
-      "naive_bytes": 267426,
+      "brain_tokens": 2052,
+      "brain_chars": 6707,
+      "naive_tokens": 88097,
+      "naive_bytes": 291157,
       "naive_files": [
         "crates/brain-graph/src/assert_tool.rs",
         "crates/brain-graph/src/builder.rs",
@@ -249,17 +249,17 @@
       "calls": [
         {
           "tool": "brain_assert",
-          "request_tokens": 24,
-          "response_tokens": 165,
-          "chars": 577,
+          "request_tokens": 26,
+          "response_tokens": 67,
+          "chars": 219,
           "is_error": false,
           "millis": 0
         }
       ],
-      "brain_tokens": 189,
-      "brain_chars": 577,
-      "naive_tokens": 11099,
-      "naive_bytes": 38895,
+      "brain_tokens": 93,
+      "brain_chars": 219,
+      "naive_tokens": 15278,
+      "naive_bytes": 50447,
       "naive_files": [
         "crates/brain-kernel/src/budget.rs",
         "crates/brain-search/src/search_tool.rs"
@@ -272,17 +272,17 @@
       "calls": [
         {
           "tool": "brain_why",
-          "request_tokens": 21,
-          "response_tokens": 93,
-          "chars": 324,
+          "request_tokens": 23,
+          "response_tokens": 117,
+          "chars": 385,
           "is_error": false,
           "millis": 13
         }
       ],
-      "brain_tokens": 114,
-      "brain_chars": 324,
-      "naive_tokens": 7475,
-      "naive_bytes": 26177,
+      "brain_tokens": 140,
+      "brain_chars": 385,
+      "naive_tokens": 9058,
+      "naive_bytes": 29905,
       "naive_files": [
         "crates/brain-graph/src/builder.rs"
       ],
@@ -294,17 +294,17 @@
       "calls": [
         {
           "tool": "brain_trace",
-          "request_tokens": 26,
-          "response_tokens": 116,
+          "request_tokens": 28,
+          "response_tokens": 123,
           "chars": 405,
           "is_error": false,
           "millis": 0
         }
       ],
-      "brain_tokens": 142,
+      "brain_tokens": 151,
       "brain_chars": 405,
-      "naive_tokens": 1793,
-      "naive_bytes": 6278,
+      "naive_tokens": 1948,
+      "naive_bytes": 6430,
       "naive_files": [
         "crates/brain-graph/src/graph_tool.rs"
       ],
@@ -316,29 +316,91 @@
       "calls": [
         {
           "tool": "brain_read",
-          "request_tokens": 29,
-          "response_tokens": 450,
+          "request_tokens": 30,
+          "response_tokens": 478,
           "chars": 1575,
           "is_error": false,
-          "millis": 7
+          "millis": 31
         },
         {
           "tool": "brain_read",
-          "request_tokens": 29,
-          "response_tokens": 69,
-          "chars": 241,
+          "request_tokens": 30,
+          "response_tokens": 63,
+          "chars": 205,
           "is_error": false,
-          "millis": 7
+          "millis": 31
         }
       ],
-      "brain_tokens": 577,
-      "brain_chars": 1816,
-      "naive_tokens": 9385,
+      "brain_tokens": 601,
+      "brain_chars": 1780,
+      "naive_tokens": 9954,
       "naive_bytes": 32877,
       "naive_files": [
         "crates/brain-graph/src/scope.rs"
       ],
-      "millis": 14
+      "millis": 62
+    },
+    {
+      "id": "leitura-simbolo-longo",
+      "question": "Qual é o corpo inteiro de Config (118 linhas), sem o corte de 80 linhas?",
+      "calls": [
+        {
+          "tool": "brain_read",
+          "request_tokens": 36,
+          "response_tokens": 1364,
+          "chars": 4500,
+          "is_error": false,
+          "millis": 3
+        }
+      ],
+      "brain_tokens": 1400,
+      "brain_chars": 4500,
+      "naive_tokens": 1958,
+      "naive_bytes": 6459,
+      "naive_files": [
+        "crates/brain-kernel/src/config.rs"
+      ],
+      "millis": 3
+    },
+    {
+      "id": "mapa-diretorios",
+      "question": "Onde eu estou no crate brain-graph, com um resumo por diretório?",
+      "calls": [
+        {
+          "tool": "brain_map",
+          "request_tokens": 24,
+          "response_tokens": 158,
+          "chars": 519,
+          "is_error": false,
+          "millis": 0
+        }
+      ],
+      "brain_tokens": 182,
+      "brain_chars": 519,
+      "naive_tokens": 88097,
+      "naive_bytes": 291157,
+      "naive_files": [
+        "crates/brain-graph/src/assert_tool.rs",
+        "crates/brain-graph/src/builder.rs",
+        "crates/brain-graph/src/diff_tool.rs",
+        "crates/brain-graph/src/edit_tool.rs",
+        "crates/brain-graph/src/graph_tool.rs",
+        "crates/brain-graph/src/history_tool.rs",
+        "crates/brain-graph/src/lib.rs",
+        "crates/brain-graph/src/map_tool.rs",
+        "crates/brain-graph/src/model.rs",
+        "crates/brain-graph/src/patch_tool.rs",
+        "crates/brain-graph/src/queries.rs",
+        "crates/brain-graph/src/read_tool.rs",
+        "crates/brain-graph/src/schema.rs",
+        "crates/brain-graph/src/scope.rs",
+        "crates/brain-graph/src/span.rs",
+        "crates/brain-graph/src/trace_tool.rs",
+        "crates/brain-graph/src/traversal.rs",
+        "crates/brain-graph/src/watcher.rs",
+        "crates/brain-graph/src/write_tool.rs"
+      ],
+      "millis": 0
     }
   ]
 }

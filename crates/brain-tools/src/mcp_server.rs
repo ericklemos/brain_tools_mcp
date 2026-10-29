@@ -128,7 +128,7 @@ async fn dispatch_request(
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 },
                 instructions: Some(
-                    "brain-tools é a fonte de verdade do código: trate o resultado de                      brain_search, brain_context_graph e brain_impact_check como já lido e                      não reabra o mesmo trecho com Read. Para editar um símbolo use brain_edit                      com o hash de brain_read; arquivo inteiro use brain_write; diff use                      brain_patch. Saída truncada traz um handle para brain_peek. Se uma chamada                      falhar, diga isso explicitamente; não caia em grep/sed silencioso. Em                      sessões só de leitura, --tools read corta o custo fixo do tools/list."
+                    "brain-tools é a fonte de verdade do código: trate o resultado de brain_search, brain_context_graph e brain_impact_check como já lido e não reabra o mesmo trecho com Read. Para editar um símbolo use brain_edit com o hash de brain_read; arquivo inteiro use brain_write; diff use brain_patch. Saída truncada traz um handle para brain_peek. Se uma chamada falhar, diga isso explicitamente; não caia em grep/sed silencioso. Em sessões só de leitura, --tools read corta o custo fixo do tools/list."
                         .to_string(),
                 ),
             };

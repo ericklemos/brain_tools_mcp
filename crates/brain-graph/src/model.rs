@@ -112,6 +112,8 @@ impl ResolutionStats {
 pub struct ProjectCodeGraph {
     pub graph: StableDiGraph<SymbolNode, RelationEdge>,
     pub symbol_lookup: HashMap<String, Vec<NodeIndex>>,
+    /// container -> name -> methods. `x.build()` must not scan every `build`.
+    pub container_lookup: HashMap<String, HashMap<String, Vec<NodeIndex>>>,
     pub qualified_lookup: HashMap<String, NodeIndex>,
     pub file_nodes: HashMap<PathBuf, Vec<NodeIndex>>,
     pub file_hashes: HashMap<PathBuf, blake3::Hash>,
@@ -136,6 +138,13 @@ impl ProjectCodeGraph {
                     self.qualified_lookup.remove(&node.qualified_name);
                     if let Some(indices) = self.symbol_lookup.get_mut(&node.name) {
                         indices.retain(|&idx| idx != node_idx);
+                    }
+                    if let Some(container) = &node.container {
+                        if let Some(methods) = self.container_lookup.get_mut(container) {
+                            if let Some(indices) = methods.get_mut(&node.name) {
+                                indices.retain(|&idx| idx != node_idx);
+                            }
+                        }
                     }
                 }
                 self.graph.remove_node(node_idx);
@@ -165,14 +174,19 @@ impl ProjectCodeGraph {
 
     /// Definitions of `name` belonging to `container`, for method calls.
     pub fn methods_of(&self, container: &str, name: &str) -> Vec<(PathBuf, NodeIndex)> {
-        self.definitions_of(name)
-            .into_iter()
-            .filter(|(_, idx)| {
-                self.graph
-                    .node_weight(*idx)
-                    .and_then(|node| node.container.as_deref())
-                    == Some(container)
+        self.container_lookup
+            .get(container)
+            .and_then(|methods| methods.get(name))
+            .map(|indices| {
+                indices
+                    .iter()
+                    .filter_map(|&idx| {
+                        self.graph
+                            .node_weight(idx)
+                            .map(|node| (node.file_path.clone(), idx))
+                    })
+                    .collect()
             })
-            .collect()
+            .unwrap_or_default()
     }
 }

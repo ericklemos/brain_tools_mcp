@@ -113,6 +113,7 @@ fn blocks_from_html(html: &str) -> Vec<Block> {
     let document = Html::parse_document(html);
     let mut blocks: Vec<Block> = Vec::new();
     let mut headings: Vec<(u8, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for node in document.tree.root().descendants() {
         let Node::Element(element) = node.value() else {
@@ -165,8 +166,22 @@ fn blocks_from_html(html: &str) -> Vec<Block> {
             continue;
         }
 
+        // A paragraph that only repeats its own heading is the page echoing
+        // itself, not evidence.
+        let repeats_heading = kind == BlockKind::Paragraph
+            && headings
+                .last()
+                .is_some_and(|(_, current)| normalize(current) == text);
+        if repeats_heading {
+            continue;
+        }
+
         let path = heading_path(&headings);
         let id = block_id(&path, &text);
+        // Two identical sentences under the same heading are one anchor.
+        if !seen.insert(id.clone()) {
+            continue;
+        }
         blocks.push(Block {
             id,
             kind,

@@ -87,6 +87,11 @@ pub struct ScopeResolver {
     crate_roots: HashMap<String, String>,
     /// Path prefix identifying a crate, e.g. `crates/brain-kernel/`.
     crate_prefixes: HashMap<String, String>,
+    /// Repo-relative file → the crate it belongs to.
+    file_crates: HashMap<PathBuf, String>,
+    /// Repo-relative file → `crates/x/src/`, the prefix used for same-crate
+    /// checks. Cached so resolution never formats a string per call site.
+    file_prefixes: HashMap<PathBuf, String>,
 }
 
 impl ScopeResolver {
@@ -107,6 +112,13 @@ impl ScopeResolver {
             .insert(module.clone(), relative.to_path_buf());
         self.file_modules
             .insert(relative.to_path_buf(), module.clone());
+        self.file_crates
+            .insert(relative.to_path_buf(), crate_name.to_string());
+        let prefix = module
+            .split_once("/src")
+            .map(|(head, _)| format!("{head}/src/"))
+            .unwrap_or_else(|| module.clone());
+        self.file_prefixes.insert(relative.to_path_buf(), prefix);
 
         // `lib.rs`, `main.rs` and `mod.rs` name their directory, not a module of
         // their own, so `crate::a::b` must be able to find `src/a/mod.rs`.
@@ -135,6 +147,8 @@ impl ScopeResolver {
             return;
         };
         remove_if_owned(&mut self.module_files, &module, relative);
+        self.file_crates.remove(relative);
+        self.file_prefixes.remove(relative);
         for alias in module_aliases(&module) {
             remove_if_owned(&mut self.module_files, &alias, relative);
         }
@@ -162,6 +176,11 @@ impl ScopeResolver {
 
     pub fn file_module(&self, relative: &Path) -> Option<&str> {
         self.file_modules.get(relative).map(String::as_str)
+    }
+
+    /// Cached `crates/x/src/` prefix for a file, used by same-crate resolution.
+    pub fn module_prefix(&self, relative: &Path) -> Option<&str> {
+        self.file_prefixes.get(relative).map(String::as_str)
     }
 
     /// Resolves a `use` path written at the top level of `file`.
@@ -245,11 +264,7 @@ impl ScopeResolver {
 
     /// The crate a file belongs to, or `None` when nothing registered it.
     fn crate_of(&self, file: &Path) -> Option<&str> {
-        let prefix = crate_prefix_of(file)?;
-        self.crate_prefixes
-            .iter()
-            .find(|(_, p)| **p == prefix)
-            .map(|(name, _)| name.as_str())
+        self.file_crates.get(file).map(String::as_str)
     }
 }
 
@@ -263,15 +278,28 @@ pub fn pick_target(
     scope: &FileScope,
     resolver: &ScopeResolver,
     call_path: Option<&str>,
-    definitions: &[(PathBuf, NodeIndex)],
+    definitions: &[NodeIndex],
+    graph: &crate::model::ProjectCodeGraph,
 ) -> Resolution {
     if definitions.is_empty() {
         return Resolution::Unknown;
     }
 
+    let file_of = |index: NodeIndex| {
+        graph
+            .graph
+            .node_weight(index)
+            .map(|node| node.file_path.as_path())
+            .unwrap_or_else(|| Path::new(""))
+    };
+
     // 1. Same file always wins: a local definition shadows everything.
-    if let Some(node) = unique_in(definitions, |file| file == caller_file) {
-        return Resolution::Resolved(node);
+    let mut same_file = definitions
+        .iter()
+        .copied()
+        .filter(|&index| file_of(index) == caller_file);
+    if let (Some(only), None) = (same_file.next(), same_file.next()) {
+        return Resolution::Resolved(only);
     }
 
     // 2. An explicit import decides the answer. If it names a file, that file
@@ -281,19 +309,29 @@ pub fn pick_target(
     if let Some(target) = scope.imports.get(call_name) {
         return match target {
             ImportTarget::External => Resolution::Unknown,
-            ImportTarget::File(file) => match definitions
-                .iter()
-                .find(|(def_file, _)| def_file == file)
-            {
-                Some((_, node)) => Resolution::Resolved(*node),
-                // The import names a module rather than the defining file;
-                // the remaining rules can still place it.
-                None => resolve_within(caller_file, scope, resolver, call_path, definitions),
-            },
+            ImportTarget::File(file) => {
+                match definitions
+                    .iter()
+                    .copied()
+                    .find(|&index| file_of(index) == file)
+                {
+                    Some(node) => Resolution::Resolved(node),
+                    // The import names a module rather than the defining file;
+                    // the remaining rules can still place it.
+                    None => resolve_within(
+                        caller_file,
+                        scope,
+                        resolver,
+                        call_path,
+                        definitions,
+                        graph,
+                    ),
+                }
+            }
         };
     }
 
-    resolve_within(caller_file, scope, resolver, call_path, definitions)
+    resolve_within(caller_file, scope, resolver, call_path, definitions, graph)
 }
 
 /// Rules 3-6: the call's own path, glob imports, the same crate, and finally an
@@ -303,50 +341,64 @@ fn resolve_within(
     scope: &FileScope,
     resolver: &ScopeResolver,
     call_path: Option<&str>,
-    definitions: &[(PathBuf, NodeIndex)],
+    definitions: &[NodeIndex],
+    graph: &crate::model::ProjectCodeGraph,
 ) -> Resolution {
+    let file_of = |index: NodeIndex| {
+        graph
+            .graph
+            .node_weight(index)
+            .map(|node| node.file_path.as_path())
+            .unwrap_or_else(|| Path::new(""))
+    };
+
     // 3. The call's own path (`crate::budget::render(…)`) names its module.
     if let Some(path) = call_path {
         if let Some(ImportTarget::File(file)) = resolver.resolve_import(caller_file, path) {
-            if let Some((_, node)) = definitions.iter().find(|(def_file, _)| *def_file == file) {
-                return Resolution::Resolved(*node);
+            if let Some(node) = definitions
+                .iter()
+                .copied()
+                .find(|&index| file_of(index) == file)
+            {
+                return Resolution::Resolved(node);
             }
         }
     }
 
     // 4. A glob import makes that module's items visible without naming them.
-    let from_globs: Vec<&(PathBuf, NodeIndex)> = definitions
+    let from_globs: Vec<NodeIndex> = definitions
         .iter()
-        .filter(|(file, _)| scope.globs.iter().any(|glob| glob == file))
+        .copied()
+        .filter(|&index| scope.globs.iter().any(|glob| glob == file_of(index)))
         .collect();
     if let [only] = from_globs.as_slice() {
-        return Resolution::Resolved(only.1);
+        return Resolution::Resolved(*only);
     }
 
-    // 5. Same crate: the strongest remaining prior.
-    if let (Some(module), Some(crate_name)) =
-        (resolver.file_module(caller_file), resolver.crate_of(caller_file))
-    {
-        let crate_prefix = module
-            .split_once("/src")
-            .map(|(head, _)| format!("{head}/src/"))
-            .unwrap_or_else(|| module.to_string());
-        let in_crate: Vec<&(PathBuf, NodeIndex)> = definitions
+    // 5. Same crate: the strongest remaining prior. The module prefix is
+    // cached at registration, so this does not format a string per candidate.
+    if let (Some(prefix), Some(crate_name)) = (
+        resolver.module_prefix(caller_file),
+        resolver.crate_of(caller_file),
+    ) {
+        let in_crate: Vec<NodeIndex> = definitions
             .iter()
-            .filter(|(file, _)| {
+            .copied()
+            .filter(|&index| {
+                let file = file_of(index);
                 resolver
                     .file_module(file)
-                    .is_some_and(|other| other.starts_with(&crate_prefix))
+                    .is_some_and(|other| other.starts_with(prefix))
                     && resolver.crate_of(file) == Some(crate_name)
             })
             .collect();
         if let [only] = in_crate.as_slice() {
-            return Resolution::Resolved(only.1);
+            return Resolution::Resolved(*only);
         }
     }
 
     // 6. Unique definition anywhere, as a last resort.
-    let mut nodes: Vec<NodeIndex> = definitions.iter().map(|(_, node)| *node).collect();
+    let mut nodes: Vec<NodeIndex> = definitions.to_vec();
     nodes.sort_unstable();
     nodes.dedup();
     match nodes.as_slice() {

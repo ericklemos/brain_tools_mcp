@@ -379,10 +379,16 @@ impl GraphTraversal {
                 priority: 255,
             });
 
+            struct Site {
+                call_site: usize,
+                start_line: usize,
+                name: String,
+            }
+
             // Group by (depth, file): one path and one depth label per file,
             // not per caller. The heading stays self-contained, so truncation
             // can drop a whole file without losing the context of the rest.
-            let mut groups: std::collections::BTreeMap<(usize, String), Vec<(usize, usize, String)>> =
+            let mut groups: std::collections::BTreeMap<(usize, String), Vec<Site>> =
                 std::collections::BTreeMap::new();
             for (caller, distance, call_site) in impacted {
                 let path = caller
@@ -391,21 +397,29 @@ impl GraphTraversal {
                     .unwrap_or(&caller.file_path)
                     .display()
                     .to_string();
-                groups
-                    .entry((distance, path))
-                    .or_default()
-                    .push((call_site, caller.start_line, caller.name.clone()));
+                groups.entry((distance, path)).or_default().push(Site {
+                    call_site,
+                    start_line: caller.start_line,
+                    name: caller.name.clone(),
+                });
             }
 
             for ((distance, path), mut sites) in groups {
-                sites.sort();
+                sites.sort_by(|a, b| {
+                    a.call_site
+                        .cmp(&b.call_site)
+                        .then_with(|| a.name.cmp(&b.name))
+                });
                 let label = if distance == 1 { "direto" } else { "transitivo" };
                 let mut body = String::new();
-                for (call_site, start_line, name) in sites {
-                    if call_site == start_line {
-                        body.push_str(&format!("- :{start_line} -> `{name}`\n"));
+                for site in sites {
+                    if site.call_site == site.start_line {
+                        body.push_str(&format!("- :{} -> `{}`\n", site.start_line, site.name));
                     } else {
-                        body.push_str(&format!("- :{start_line} -> `{name}` @{call_site}\n"));
+                        body.push_str(&format!(
+                            "- :{} -> `{}` @{}\n",
+                            site.start_line, site.name, site.call_site
+                        ));
                     }
                 }
                 sections.push(Section {

@@ -27,6 +27,7 @@ impl ToolProfile {
                 "brain_write",
                 "brain_patch",
                 "brain_map",
+                "brain_fetch",
             ]),
             Self::Read => Some(&[
                 "brain_search",
@@ -38,6 +39,7 @@ impl ToolProfile {
                 "brain_assert",
                 "brain_diff",
                 "brain_why",
+                "brain_fetch",
             ]),
         }
     }

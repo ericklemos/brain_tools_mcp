@@ -1,6 +1,6 @@
 use crate::model::*;
 use crate::queries::GraphQueries;
-use crate::scope::{self, ImportTarget, Resolution, ScopeResolver};
+use crate::scope::{self, FileScope, ImportTarget, Resolution, ScopeResolver};
 use brain_kernel::ast::SupportedLanguage;
 use brain_kernel::parse_cache::{ParseCache, ParseWorker};
 use brain_kernel::{BrainError, Result};
@@ -9,8 +9,10 @@ use ignore::WalkBuilder;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use streaming_iterator::StreamingIterator;
+use petgraph::stable_graph::NodeIndex;
 use tree_sitter::{Node, QueryCursor};
 
 pub struct GraphBuilder {
@@ -46,118 +48,70 @@ impl GraphBuilder {
         let mut code_graph = ProjectCodeGraph::new();
         let files = self.collect_code_files(root_dir)?;
 
-        let mut file_contents = HashMap::new();
-        let mut file_trees = HashMap::new();
-
-        // Pass 0: parse, and teach the resolver where every file lives. Imports
-        // cannot be resolved before the whole directory layout is known, which
-        // is why this is a pass of its own.
-        // Reading and parsing are independent per file, so they run on a
-        // handful of threads; the shared graph is only touched afterwards, in
-        // files order, which keeps node indices deterministic between runs.
-        let parsed = std::thread::scope(|scope| {
-            let workers = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-                .min(files.len().max(1));
-            let chunk = files.len().div_ceil(workers).max(1);
-
-            let cache = self.cache.clone();
-            let handles: Vec<_> = files
-                .chunks(chunk)
-                .map(|slice| {
-                    let cache = cache.clone();
-                    scope.spawn(move || {
-                        let mut out = Vec::with_capacity(slice.len());
-                        // One grammar load per worker, not one per file.
-                        let mut worker = ParseWorker::new();
-                        for path in slice {
-                            let content = match fs::read_to_string(path) {
-                                Ok(c) => c,
-                                Err(_) => continue,
-                            };
-
-                            let hash = blake3::hash(content.as_bytes());
-                            let tree = SupportedLanguage::from_path(path).and_then(|lang| {
-                                worker
-                                    .parse(lang, &content)
-                                    .ok()
-                                    .map(|tree| (lang, Arc::new(tree)))
-                            });
-                            if let (Some(cache), Some((_, tree))) = (&cache, &tree) {
-                                cache.insert(path, hash, tree.clone());
-                            }
-
-                            out.push((path.clone(), content, hash, tree));
-                        }
-                        out
-                    })
+        // Pass 0: read + parse in parallel, files indexed to keep order. The
+        // resolver layout is merged in that same order, so node indices are
+        // stable between runs.
+        let parsed: Vec<Option<ParsedFile>> =
+            parallel_map(files.len(), ParseWorker::new, |index, worker| {
+                let path = &files[index];
+                let content = fs::read_to_string(path).ok()?;
+                let hash = blake3::hash(content.as_bytes());
+                let tree = SupportedLanguage::from_path(path).and_then(|lang| {
+                    worker
+                        .parse(lang, &content)
+                        .ok()
+                        .map(|tree| (lang, Arc::new(tree)))
+                });
+                if let (Some(cache), Some((_, tree))) = (&self.cache, &tree) {
+                    cache.insert(path, hash, tree.clone());
+                }
+                Some(ParsedFile {
+                    path: path.clone(),
+                    content,
+                    hash,
+                    tree,
                 })
-                .collect();
+            });
+        let parsed: Vec<ParsedFile> = parsed.into_iter().flatten().collect();
 
-            handles
-                .into_iter()
-                .flat_map(|handle| handle.join().unwrap_or_default())
-                .collect::<Vec<_>>()
-        });
-
-        for (path, content, hash, tree) in parsed {
-            code_graph.file_hashes.insert(path.clone(), hash);
-
-            if let Some((_, tree)) = tree {
+        for file in &parsed {
+            code_graph.file_hashes.insert(file.path.clone(), file.hash);
+            if file.tree.is_some() {
                 code_graph
                     .resolver
-                    .register_file(&path, &scope::crate_name_for(&path));
-                file_trees.insert(path.clone(), tree);
-            }
-
-            file_contents.insert(path, content);
-        }
-
-        // Pass 1: definitions (nodes).
-        for (path, tree) in &file_trees {
-            if let Some(lang) = SupportedLanguage::from_path(path) {
-                if let Some(content) = file_contents.get(path) {
-                    self.extract_definitions_from_file(
-                        &mut code_graph,
-                        path,
-                        content,
-                        &tree.root_node(),
-                        lang,
-                    )?;
-                }
+                    .register_file(&file.path, &scope::crate_name_for(&file.path));
             }
         }
 
-        // Pass 2: imports (scopes). Must follow pass 1 only for ordering
-        // clarity; it depends on the resolver, populated in pass 0.
-        for (path, tree) in &file_trees {
-            if let Some(lang) = SupportedLanguage::from_path(path) {
-                if let Some(content) = file_contents.get(path) {
-                    self.extract_imports_from_file(
-                        &mut code_graph,
-                        path,
-                        content,
-                        &tree.root_node(),
-                        lang,
-                    )?;
-                }
+        // Pass 1: definitions. Query execution is independent per file; only
+        // the merge touches the graph, in file order.
+        let definitions: Vec<Option<Result<Vec<SymbolNode>>>> =
+            parallel_map(parsed.len(), || (), |index, ()| {
+                Some(self.definitions_for(&parsed[index]))
+            });
+        for nodes in definitions.into_iter().flatten() {
+            merge_definitions(&mut code_graph, nodes?);
+        }
+
+        // Pass 2: imports. The resolver is complete after pass 0.
+        let imports: Vec<Option<Result<FileScope>>> =
+            parallel_map(parsed.len(), || (), |index, ()| {
+                Some(self.imports_for(&parsed[index], &code_graph.resolver))
+            });
+        for (index, scope) in imports.into_iter().enumerate() {
+            if let Some(scope) = scope {
+                code_graph.scopes.insert(parsed[index].path.clone(), scope?);
             }
         }
 
-        // Pass 3: calls (edges), now that every name has a scope.
-        for (path, tree) in &file_trees {
-            if let Some(lang) = SupportedLanguage::from_path(path) {
-                if let Some(content) = file_contents.get(path) {
-                    self.extract_relations_from_file(
-                        &mut code_graph,
-                        path,
-                        content,
-                        &tree.root_node(),
-                        lang,
-                    )?;
-                }
-            }
+        // Pass 3: calls, now that every name has a node and a scope. Resolution
+        // reads the graph; edges are collected per file and merged in order.
+        let relations: Vec<Option<Result<RelationsDelta>>> =
+            parallel_map(parsed.len(), || (), |index, ()| {
+                Some(self.relations_for(&parsed[index], &code_graph))
+            });
+        for delta in relations.into_iter().flatten() {
+            apply_relations(&mut code_graph, delta?);
         }
 
         Ok(code_graph)
@@ -174,52 +128,117 @@ impl GraphBuilder {
         path: &PathBuf,
         _root_dir: &Path,
     ) -> Result<bool> {
+        let known_hash = code_graph.file_hashes.get(path).copied();
+        let prepared = self.prepare_update(known_hash, path)?;
+        self.apply_update(code_graph, prepared)
+    }
+
+    /// Read, hash and parse outside the graph lock. The watcher calls this on
+    /// the blocking pool so a save never freezes readers while tree-sitter runs.
+    pub fn prepare_update(
+        &self,
+        known_hash: Option<blake3::Hash>,
+        path: &Path,
+    ) -> Result<PreparedUpdate> {
         if !path.exists() {
-            code_graph.remove_file_nodes(path);
+            return Ok(PreparedUpdate {
+                path: path.to_path_buf(),
+                content: None,
+                hash: None,
+                tree: None,
+                changed: true,
+                removed: true,
+            });
+        }
+
+        let content = fs::read_to_string(path).map_err(BrainError::Io)?;
+        let hash = blake3::hash(content.as_bytes());
+        if known_hash == Some(hash) {
+            return Ok(PreparedUpdate {
+                path: path.to_path_buf(),
+                content: None,
+                hash: Some(hash),
+                tree: None,
+                changed: false,
+                removed: false,
+            });
+        }
+
+        let tree = SupportedLanguage::from_path(path).and_then(|lang| {
+            ParseWorker::new()
+                .parse(lang, &content)
+                .ok()
+                .map(|tree| (lang, Arc::new(tree)))
+        });
+        if let (Some(cache), Some((_, tree))) = (&self.cache, &tree) {
+            cache.insert(path, hash, tree.clone());
+        }
+
+        Ok(PreparedUpdate {
+            path: path.to_path_buf(),
+            content: Some(content),
+            hash: Some(hash),
+            tree,
+            changed: true,
+            removed: false,
+        })
+    }
+
+    /// Applies a prepared update under a short write lock.
+    pub fn apply_update(
+        &self,
+        code_graph: &mut ProjectCodeGraph,
+        prepared: PreparedUpdate,
+    ) -> Result<bool> {
+        if !prepared.changed {
+            return Ok(false);
+        }
+
+        code_graph.remove_file_nodes(&prepared.path);
+        if prepared.removed {
             if let Some(cache) = &self.cache {
-                cache.invalidate(path);
+                cache.invalidate(&prepared.path);
             }
             return Ok(true);
         }
 
-        let content = fs::read_to_string(path).map_err(BrainError::Io)?;
-        let current_hash = blake3::hash(content.as_bytes());
-
-        if let Some(existing_hash) = code_graph.file_hashes.get(path) {
-            if *existing_hash == current_hash {
-                return Ok(false); // Hash unchanged
-            }
-        }
-
-        // Remove old nodes, scope and resolver entry before re-adding.
-        code_graph.remove_file_nodes(path);
-        code_graph.file_hashes.insert(path.clone(), current_hash);
-
-        let lang = match SupportedLanguage::from_path(path) {
-            Some(l) => l,
-            None => return Ok(false),
+        let (Some(content), Some(hash)) = (prepared.content, prepared.hash) else {
+            return Ok(true);
         };
+        code_graph.file_hashes.insert(prepared.path.clone(), hash);
 
-        let mut worker = ParseWorker::new();
-        let tree = worker.parse(lang, &content).ok().map(Arc::new);
-        if let (Some(cache), Some(tree)) = (&self.cache, &tree) {
-            cache.insert(path, current_hash, tree.clone());
-        }
+        let Some((lang, tree)) = prepared.tree else {
+            return Ok(true);
+        };
+        code_graph
+            .resolver
+            .register_file(&prepared.path, &scope::crate_name_for(&prepared.path));
 
-        if let Some(tree) = tree {
-            code_graph
-                .resolver
-                .register_file(path, &scope::crate_name_for(path));
-            self.extract_definitions_from_file(
-                code_graph,
-                path,
-                &content,
-                &tree.root_node(),
-                lang,
-            )?;
-            self.extract_imports_from_file(code_graph, path, &content, &tree.root_node(), lang)?;
-            self.extract_relations_from_file(code_graph, path, &content, &tree.root_node(), lang)?;
-        }
+        let nodes = self.collect_definitions(
+            &prepared.path,
+            &content,
+            &tree.root_node(),
+            lang,
+        )?;
+        merge_definitions(code_graph, nodes);
+
+        let scope = self.collect_imports(
+            &prepared.path,
+            &content,
+            &tree.root_node(),
+            lang,
+            &code_graph.resolver,
+        )?;
+        code_graph.scopes.insert(prepared.path.clone(), scope);
+
+        let delta = self.collect_relations(
+            &prepared.path,
+            &content,
+            &tree.root_node(),
+            lang,
+            code_graph,
+        )?;
+        apply_relations(code_graph, delta);
 
         Ok(true)
     }
@@ -242,17 +261,19 @@ impl GraphBuilder {
 
         let mut files = Vec::new();
         for entry in walker.build().filter_map(|e| e.ok()) {
-            if entry.file_type().is_some_and(|ft| ft.is_file()) {
-                let path = entry.path();
-                let path_str = path.to_string_lossy();
-                if !path_str.contains("/target/")
-                    && !path_str.contains("/build/")
-                    && !path_str.contains("/.gradle/")
-                    && !path_str.contains("/node_modules/")
-                    && !path_str.contains("/.git/")
-                {
-                    files.push(path.to_path_buf());
-                }
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
+            }
+            let path = entry.path();
+            // Components, not a formatted string: no allocation per entry.
+            let excluded = path.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("target" | "build" | ".gradle" | "node_modules" | ".git")
+                )
+            });
+            if !excluded {
+                files.push(path.to_path_buf());
             }
         }
         // Walk order is not guaranteed; sorting makes the parallel parse and
@@ -261,20 +282,53 @@ impl GraphBuilder {
         Ok(files)
     }
 
-    fn extract_definitions_from_file(
+    fn definitions_for(&self, file: &ParsedFile) -> Result<Vec<SymbolNode>> {
+        let Some((lang, tree)) = &file.tree else {
+            return Ok(Vec::new());
+        };
+        self.collect_definitions(&file.path, &file.content, &tree.root_node(), *lang)
+    }
+
+    fn imports_for(&self, file: &ParsedFile, resolver: &ScopeResolver) -> Result<FileScope> {
+        let Some((lang, tree)) = &file.tree else {
+            return Ok(FileScope::default());
+        };
+        self.collect_imports(
+            &file.path,
+            &file.content,
+            &tree.root_node(),
+            *lang,
+            resolver,
+        )
+    }
+
+    fn relations_for(&self, file: &ParsedFile, graph: &ProjectCodeGraph) -> Result<RelationsDelta> {
+        let Some((lang, tree)) = &file.tree else {
+            return Ok(RelationsDelta::default());
+        };
+        self.collect_relations(
+            &file.path,
+            &file.content,
+            &tree.root_node(),
+            *lang,
+            graph,
+        )
+    }
+
+    fn collect_definitions(
         &self,
-        code_graph: &mut ProjectCodeGraph,
         path: &Path,
         content: &str,
         root_node: &Node,
         lang: SupportedLanguage,
-    ) -> Result<()> {
+    ) -> Result<Vec<SymbolNode>> {
         let query = self.queries.defs_query(lang);
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(query, *root_node, content.as_bytes());
 
         let name_idx = query.capture_index_for_name("name").unwrap_or(0);
         let def_idx = query.capture_index_for_name("def").unwrap_or(1);
+        let mut definitions = Vec::new();
 
         while let Some(m) = matches.next() {
             let mut symbol_name = String::new();
@@ -312,56 +366,44 @@ impl GraphBuilder {
 
             let signature = self.extract_signature(node, content.as_bytes(), lang);
             let qualified_name = match &container {
-                Some(container) => format!("{container}::{}", symbol_name),
+                Some(container) => format!("{container}::{symbol_name}"),
                 None => symbol_name.clone(),
             };
             let qualified_name = format!("{}::{}", path.display(), qualified_name);
 
-            let symbol_node = SymbolNode {
-                qualified_name: qualified_name.clone(),
-                name: symbol_name.clone(),
+            definitions.push(SymbolNode {
+                qualified_name,
+                name: symbol_name,
                 kind,
                 file_path: path.to_path_buf(),
                 start_line: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
                 signature,
                 container,
-                is_test: is_test_definition(node, content.as_bytes(), lang),
-            };
-
-            let node_idx = code_graph.graph.add_node(symbol_node);
-            code_graph
-                .symbol_lookup
-                .entry(symbol_name)
-                .or_default()
-                .push(node_idx);
-            code_graph.qualified_lookup.insert(qualified_name, node_idx);
-            code_graph
-                .file_nodes
-                .entry(path.to_path_buf())
-                .or_default()
-                .push(node_idx);
+                is_test: is_test_definition(node, content.as_bytes(), lang)
+                    || is_test_file(path),
+            });
         }
 
-        Ok(())
+        Ok(definitions)
     }
 
-    fn extract_imports_from_file(
+    fn collect_imports(
         &self,
-        code_graph: &mut ProjectCodeGraph,
         path: &Path,
         content: &str,
         root_node: &Node,
         lang: SupportedLanguage,
-    ) -> Result<()> {
+        resolver: &ScopeResolver,
+    ) -> Result<FileScope> {
         let Some(query) = self.queries.imports_query(lang) else {
-            return Ok(());
+            return Ok(FileScope::default());
         };
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(query, *root_node, content.as_bytes());
 
         let path_idx = query.capture_index_for_name("import.path").unwrap_or(0);
-        let mut scope = crate::scope::FileScope::default();
+        let mut scope = FileScope::default();
 
         while let Some(m) = matches.next() {
             for capture in m.captures {
@@ -375,15 +417,13 @@ impl GraphBuilder {
                     .to_string();
                 // `use super::x` inside `mod tests` climbs from the inline
                 // module, not from the file's top level.
-                let module =
-                    module_context(capture.node, content.as_bytes(), path, &code_graph.resolver);
+                let module = module_context(capture.node, content.as_bytes(), path, resolver);
 
                 for item in scope::expand_use(&raw) {
                     match &item {
                         scope::UseItem::Glob { path: import_path } => {
-                            if let Some(ImportTarget::File(file)) = code_graph
-                                .resolver
-                                .resolve_import_in(path, &module, import_path)
+                            if let Some(ImportTarget::File(file)) =
+                                resolver.resolve_import_in(path, &module, import_path)
                             {
                                 if !scope.globs.contains(&file) {
                                     scope.globs.push(file);
@@ -395,9 +435,7 @@ impl GraphBuilder {
                             path: import_path,
                         } => {
                             if let Some(target) =
-                                code_graph
-                                    .resolver
-                                    .resolve_import_in(path, &module, import_path)
+                                resolver.resolve_import_in(path, &module, import_path)
                             {
                                 scope.imports.insert(name.clone(), target);
                             }
@@ -407,21 +445,19 @@ impl GraphBuilder {
             }
         }
 
-        code_graph.scopes.insert(path.to_path_buf(), scope);
-        Ok(())
+        Ok(scope)
     }
 
-    fn extract_relations_from_file(
+    fn collect_relations(
         &self,
-        code_graph: &mut ProjectCodeGraph,
         path: &Path,
         content: &str,
         root_node: &Node,
         lang: SupportedLanguage,
-    ) -> Result<()> {
-        let file_node_indices = match code_graph.file_nodes.get(path) {
-            Some(indices) => indices.clone(),
-            None => return Ok(()),
+        graph: &ProjectCodeGraph,
+    ) -> Result<RelationsDelta> {
+        let Some(file_node_indices) = graph.file_nodes.get(path) else {
+            return Ok(RelationsDelta::default());
         };
 
         let query = self.queries.calls_query(lang);
@@ -435,11 +471,11 @@ impl GraphBuilder {
         let bindings = if lang == SupportedLanguage::Rust {
             self.collect_bindings(content, root_node)
         } else {
-            Vec::new()
+            Bindings::new()
         };
 
-        let empty_scope = crate::scope::FileScope::default();
-        let scope = code_graph.scopes.get(path).unwrap_or(&empty_scope).clone();
+        let empty_scope = FileScope::default();
+        let scope = graph.scopes.get(path).unwrap_or(&empty_scope);
 
         // The call query overlaps on purpose: a single `crate::a::f()` matches
         // both the scoped and the path-shaped pattern, each carrying a
@@ -492,48 +528,41 @@ impl GraphBuilder {
             }
         }
 
+        let mut delta = RelationsDelta::default();
         for site in sites.values() {
             // The caller is the innermost definition containing the call, not
             // the first one: closures and nested functions live inside their
             // parent, and picking the parent would attribute the edge to the
             // wrong node.
-            let Some(caller) = innermost_enclosing(&file_node_indices, code_graph, site.line)
-            else {
+            let Some(caller) = innermost_enclosing(file_node_indices, graph, site.line) else {
                 continue;
             };
-            let caller_container = code_graph
+            let caller_container = graph
                 .graph
                 .node_weight(caller)
-                .and_then(|node| node.container.clone());
+                .and_then(|node| node.container.as_deref());
 
             let resolution = self.resolve_call(
-                code_graph,
-                &scope,
+                graph,
+                scope,
                 path,
                 &site.name,
                 site.path.as_deref(),
                 site.receiver.as_deref(),
-                caller_container.as_deref(),
+                caller_container,
                 &bindings,
                 site.line,
             );
-            code_graph.resolution.record(&site.name, &resolution);
 
-            if let Resolution::Resolved(callee) = resolution {
-                if caller != callee {
-                    code_graph.graph.add_edge(
-                        caller,
-                        callee,
-                        RelationEdge {
-                            kind: RelationKind::Calls,
-                            call_site_line: site.line,
-                        },
-                    );
+            if let Resolution::Resolved(callee) = &resolution {
+                if caller != *callee {
+                    delta.edges.push((caller, *callee, site.line));
                 }
             }
+            delta.decisions.push((site.name.clone(), resolution));
         }
 
-        Ok(())
+        Ok(delta)
     }
 
     /// Decides which definition a call refers to.
@@ -545,72 +574,80 @@ impl GraphBuilder {
     fn resolve_call(
         &self,
         code_graph: &ProjectCodeGraph,
-        scope: &crate::scope::FileScope,
+        scope: &FileScope,
         caller_file: &Path,
         called_name: &str,
         call_path: Option<&str>,
         receiver: Option<&str>,
         caller_container: Option<&str>,
-        bindings: &[(usize, String, String)],
+        bindings: &Bindings,
         call_line: usize,
     ) -> Resolution {
-        // `self.method()` belongs to the enclosing impl.
-        let receiver_type = match receiver {
-            Some("self") => caller_container.map(str::to_string),
+        use std::borrow::Cow;
+
+        // `self.method()` belongs to the enclosing impl. Borrow the container
+        // and the receiver type instead of cloning them per call site.
+        let receiver_type: Option<Cow<'_, str>> = match receiver {
+            Some("self") => caller_container.map(Cow::Borrowed),
             Some(name) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
-                Some(name.to_string())
+                Some(Cow::Borrowed(name))
             }
-            Some(name) => binding_type_at(bindings, name, call_line),
+            Some(name) => binding_type_at(bindings, name, call_line).map(Cow::Owned),
             None => None,
         };
 
         if let Some(container) = receiver_type {
-            let matches = code_graph.methods_of(&container, called_name);
-            match matches.len() {
-                1 => return Resolution::Resolved(matches[0].1),
-                0 => {}
-                n => {
-                    // Several impls of the same type: fall through to scope
-                    // resolution, which can at least use the file.
-                    let _ = n;
-                }
+            let matches = code_graph
+                .container_lookup
+                .get(container.as_ref())
+                .and_then(|methods| methods.get(called_name))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if let [only] = matches {
+                return Resolution::Resolved(*only);
             }
         }
+
+        let definitions = code_graph
+            .symbol_lookup
+            .get(called_name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
 
         // `Type::method()` where the type is not modelled (trait impls, enum
         // variants) still gets a shot through the path's module.
         if let Some(path_segments) = call_path {
             if let Some(module_file) = scope::last_segment(path_segments) {
-                let matches: Vec<_> = code_graph
-                    .definitions_of(called_name)
-                    .into_iter()
-                    .filter(|(_, idx)| {
+                let matches: Vec<NodeIndex> = definitions
+                    .iter()
+                    .copied()
+                    .filter(|&index| {
                         code_graph
                             .graph
-                            .node_weight(*idx)
+                            .node_weight(index)
                             .is_some_and(|node| node.container.as_deref() == Some(module_file))
                     })
                     .collect();
-                if let [(_, node)] = matches.as_slice() {
+                if let [node] = matches.as_slice() {
                     return Resolution::Resolved(*node);
                 }
             }
         }
 
-        let definitions = code_graph.definitions_of(called_name);
         scope::pick_target(
             called_name,
             caller_file,
             scope,
             &code_graph.resolver,
             call_path,
-            &definitions,
+            definitions,
+            code_graph,
         )
     }
 
     /// `let x = Type::new(…)`, `let x: Type = …`, `let x = Type { … }` per line.
-    fn collect_bindings(&self, content: &str, root_node: &Node) -> Vec<(usize, String, String)> {
-        let mut bindings = Vec::new();
+    fn collect_bindings(&self, content: &str, root_node: &Node) -> Bindings {
+        let mut bindings = Bindings::new();
         let Some(query) = &self.queries.rust_bindings else {
             return bindings;
         };
@@ -641,45 +678,36 @@ impl GraphBuilder {
 
             if let (Some(binding), Some(binding_type)) = (binding, binding_type) {
                 if !binding_type.is_empty() {
-                    bindings.push((line, binding, binding_type));
+                    bindings
+                        .entry(binding)
+                        .or_default()
+                        .push((line, binding_type));
                 }
             }
         }
 
-        bindings.sort_by_key(|(line, _, _)| *line);
+        for entries in bindings.values_mut() {
+            entries.sort_by_key(|(line, _)| *line);
+        }
         bindings
     }
-
-    fn extract_signature(&self, node: Node, source: &[u8], lang: SupportedLanguage) -> String {
-        let text = node.utf8_text(source).unwrap_or("");
-        match lang {
-            SupportedLanguage::Rust => {
-                if let Some(body_node) = node.child_by_field_name("body") {
-                    let sig_end = body_node.start_byte().saturating_sub(node.start_byte());
-                    return text[..sig_end].trim().to_string();
-                }
-                if let Some(idx) = text.find('{') {
-                    text[..idx].trim().to_string()
-                } else {
-                    text.lines().next().unwrap_or("").trim().to_string()
-                }
-            }
-            SupportedLanguage::Kotlin => {
-                if let Some(idx) = text.find('{') {
-                    text[..idx].trim().to_string()
-                } else {
-                    text.lines().next().unwrap_or("").trim().to_string()
-                }
-            }
-        }
-    }
-}
 
 /// Whether a definition belongs to a test: `#[test]`, `#[tokio::test]`,
 /// `#[cfg(test)]`, or a `mod tests` ancestor.
 ///
 /// The graph stores it so callers can decide to collapse test-only impacts
 /// instead of spending the response budget on them.
+/// Test files live under a `tests/` directory or are named `*_test.rs`.
+/// A fixture helper has no `#[test]` attribute but is still test-only.
+fn is_test_file(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "tests")
+        || path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem == "tests" || stem.ends_with("_test"))
+}
+
 fn is_test_definition(node: Node, source: &[u8], lang: SupportedLanguage) -> bool {
     if lang != SupportedLanguage::Rust {
         return false;
@@ -759,16 +787,104 @@ fn last_type_segment(text: &str) -> String {
 }
 
 /// The most recent binding of `receiver` at or before `line`.
-fn binding_type_at(
-    bindings: &[(usize, String, String)],
-    receiver: &str,
-    line: usize,
-) -> Option<String> {
-    bindings
-        .iter()
-        .filter(|(bind_line, name, _)| *bind_line <= line && name == receiver)
-        .max_by_key(|(bind_line, _, _)| *bind_line)
-        .map(|(_, _, ty)| ty.clone())
+fn binding_type_at(bindings: &Bindings, receiver: &str, line: usize) -> Option<String> {
+    let entries = bindings.get(receiver)?;
+    // Last binding at or before the call line.
+    let position = entries.partition_point(|(bind_line, _)| *bind_line <= line);
+    position.checked_sub(1).map(|index| entries[index].1.clone())
+}
+
+fn merge_definitions(graph: &mut ProjectCodeGraph, nodes: Vec<SymbolNode>) {
+    for node in nodes {
+        let name = node.name.clone();
+        let qualified = node.qualified_name.clone();
+        let path = node.file_path.clone();
+        let container = node.container.clone();
+        let index = graph.graph.add_node(node);
+        graph
+            .symbol_lookup
+            .entry(name.clone())
+            .or_default()
+            .push(index);
+        graph.qualified_lookup.insert(qualified, index);
+        graph.file_nodes.entry(path).or_default().push(index);
+        if let Some(container) = container {
+            graph
+                .container_lookup
+                .entry(container)
+                .or_default()
+                .entry(name)
+                .or_default()
+                .push(index);
+        }
+    }
+}
+
+fn apply_relations(graph: &mut ProjectCodeGraph, delta: RelationsDelta) {
+    for (name, resolution) in delta.decisions {
+        graph.resolution.record(&name, &resolution);
+    }
+    for (caller, callee, line) in delta.edges {
+        graph.graph.add_edge(
+            caller,
+            callee,
+            RelationEdge {
+                kind: RelationKind::Calls,
+                call_site_line: line,
+            },
+        );
+    }
+}
+
+/// Runs `map` over `0..len` on a bounded worker set. Each worker owns a
+/// context (a parser, for the read/parse pass) and claims indices from a shared
+/// queue, so one huge file cannot become the tail while others idle. Results
+/// stay at their original index, which keeps merges deterministic.
+fn parallel_map<C, T, F>(len: usize, make: impl Fn() -> C, map: F) -> Vec<Option<T>>
+where
+    C: Send,
+    T: Send,
+    F: Fn(usize, &mut C) -> Option<T> + Sync,
+{
+    if len == 0 {
+        return Vec::new();
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(len);
+    let next = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<T>>> = (0..len).map(|_| Mutex::new(None)).collect();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            let slots = &slots;
+            let map = &map;
+            let make = &make;
+            scope.spawn(move || {
+                let mut context = make();
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= len {
+                        break;
+                    }
+                    let value = map(index, &mut context);
+                    *slots[index]
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
+                }
+            });
+        }
+    });
+
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        })
+        .collect()
 }
 
 /// The module path a `use` at `node` resolves from: the file's module plus any

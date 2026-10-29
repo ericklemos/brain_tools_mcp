@@ -238,6 +238,39 @@
           }
         }
       ]
+    },
+    {
+      "id": "leitura-simbolo-longo",
+      "question": "Qual é o corpo inteiro de Config (118 linhas), sem o corte de 80 linhas?",
+      "naive": [
+        "crates/brain-kernel/src/config.rs"
+      ],
+      "calls": [
+        {
+          "tool": "brain_read",
+          "arguments": {
+            "path": "crates/brain-kernel/src/config.rs",
+            "symbol": "Config",
+            "budget_tokens": 4000
+          }
+        }
+      ]
+    },
+    {
+      "id": "mapa-diretorios",
+      "question": "Onde eu estou no crate brain-graph, com um resumo por diretório?",
+      "naive": [
+        "crates/brain-graph/src"
+      ],
+      "calls": [
+        {
+          "tool": "brain_map",
+          "arguments": {
+            "path": "crates/brain-graph",
+            "depth": "dirs"
+          }
+        }
+      ]
     }
   ]
 }

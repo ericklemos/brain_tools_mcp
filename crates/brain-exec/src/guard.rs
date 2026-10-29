@@ -330,6 +330,13 @@ fn check_segment(segment: &Segment) -> Option<Blocked> {
 }
 
 fn classify(program: &str, words: &[String]) -> Option<Blocked> {
+    // `wc` sem arquivo é só um consumidor de pipe (`cargo test | wc -l`);
+    // com arquivo, é leitura de código: `brain_read` já devolve o tamanho.
+    let has_file_operand = words
+        .iter()
+        .skip(1)
+        .any(|word| !word.starts_with('-') && word != "-");
+
     let (replacement, label) = match program {
         "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "ugrep" => ("brain_search", program),
         "cat" | "bat" | "less" | "more" | "most" | "head" | "tail" | "nl" | "tac" | "strings"
@@ -339,6 +346,7 @@ fn classify(program: &str, words: &[String]) -> Option<Blocked> {
             let edit = words.iter().skip(1).any(|w| w.starts_with("-i"));
             (if edit { "brain_edit" } else { "brain_read" }, program)
         }
+        "wc" if has_file_operand => ("brain_read", program),
         "find" | "fd" | "fdfind" | "locate" | "tree" | "ls" | "dir" | "vdir" => {
             ("brain_map", program)
         }
@@ -376,6 +384,8 @@ fn git_target(words: &[String]) -> Option<Blocked> {
         "show" => ("brain_diff", "git show"),
         "blame" => ("brain_why", "git blame"),
         "apply" => ("brain_patch", "git apply"),
+        "ls-files" => ("brain_map", "git ls-files"),
+        "ls-tree" => ("brain_map", "git ls-tree"),
         "log" if words[index + 1..].iter().any(|w| w.starts_with("-L")) => {
             ("brain_why", "git log -L")
         }
@@ -586,6 +596,26 @@ mod tests {
     }
 
     #[test]
+    fn a_wc_with_a_file_operand_is_reading_code() {
+        assert_eq!(
+            blocked("wc -l crates/brain-kernel/src/*.rs"),
+            Some(("wc".into(), "brain_read"))
+        );
+        assert_eq!(
+            blocked("/usr/bin/wc -l src/lib.rs"),
+            Some(("wc".into(), "brain_read"))
+        );
+    }
+
+    #[test]
+    fn a_wc_without_a_file_operand_is_left_alone() {
+        assert_eq!(blocked("git log --oneline | wc -l"), None);
+        assert_eq!(blocked("wc -l"), None);
+        assert_eq!(blocked("wc -l -"), None);
+        assert_eq!(blocked("printf x | xargs wc -l"), None);
+    }
+
+    #[test]
     fn unwraps_wrappers_and_nested_shells() {
         assert_eq!(
             blocked("sudo env FOO=1 bash -c 'rg token'"),
@@ -614,6 +644,14 @@ mod tests {
         assert_eq!(
             blocked("git -C sub diff --stat"),
             Some(("git diff".into(), "brain_diff"))
+        );
+        assert_eq!(
+            blocked("git ls-files crates/brain-kernel/src"),
+            Some(("git ls-files".into(), "brain_map"))
+        );
+        assert_eq!(
+            blocked("git -C sub ls-tree HEAD src"),
+            Some(("git ls-tree".into(), "brain_map"))
         );
         assert_eq!(
             blocked("git log -L 1,20:src/a.rs"),

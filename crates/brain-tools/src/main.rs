@@ -63,6 +63,22 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(config.handle_ttl_secs),
         config.handle_max_bytes,
     ));
+
+    // brain_fetch reads the web the way brain_read reads code: bounded blocks,
+    // a shared handle store, and no second download for the same URL. It is
+    // created here because it borrows this process's store; the registry,
+    // built below, adopts it.
+    brain_kernel::plugin::install(Arc::new(
+        brain_web::FetchTool::new(
+            Arc::new(
+                brain_web::http::HttpFetcher::new(Duration::from_secs(20), 4 * 1024 * 1024)
+                    .expect("http client"),
+            ),
+            config.root_dir.clone(),
+            store.clone(),
+        )
+        .with_budget(config.default_budget_tokens),
+    ));
     // Remembering what this session already delivered is the cheapest token:
     // the one not sent twice.
     let deliveries = config.delivery_ledger.then(|| {

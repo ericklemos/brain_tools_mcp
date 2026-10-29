@@ -125,6 +125,21 @@ impl MapTool {
             })
             .collect();
 
+        let hidden_tests: usize = files
+            .iter()
+            .map(|(_, nodes)| {
+                nodes
+                    .iter()
+                    .filter(|&&idx| {
+                        graph
+                            .graph
+                            .node_weight(idx)
+                            .is_some_and(|node| node.is_test)
+                    })
+                    .count()
+            })
+            .sum();
+
         // A file with no visible (non-test) symbol is not orientation.
         files.retain(|(_, nodes)| {
             include_tests
@@ -137,6 +152,15 @@ impl MapTool {
         });
 
         if files.is_empty() {
+            if hidden_tests > 0 && !include_tests {
+                return vec![Section {
+                    heading: "### Mapa do projeto — 0 símbolos de produção".to_string(),
+                    body: format!(
+                        "> {hidden_tests} símbolo(s) de teste oculto(s); include_tests: true para ver.\n"
+                    ),
+                    priority: 255,
+                }];
+            }
             return Vec::new();
         }
 
@@ -224,7 +248,7 @@ impl MapTool {
                     body.push_str(&format!("- … e mais {} arquivos\n", row.top.len() - 5));
                 }
                 let tests_note = if row.tests > 0 {
-                    format!(" ({} testes)", row.tests)
+                    format!(" ({} teste(s))", row.tests)
                 } else {
                     String::new()
                 };
@@ -267,7 +291,7 @@ impl MapTool {
 
             let fan_in = score(nodes);
             let tests_note = if hidden > 0 {
-                format!(" ({hidden} testes)")
+                format!(" ({hidden} teste(s))")
             } else {
                 String::new()
             };
@@ -468,7 +492,7 @@ mod tests {
         let default = tool.handle_map(serde_json::json!({})).await.content[0].text.clone();
         assert!(default.contains("production"), "{default}");
         assert!(!default.contains("hidden_test"), "{default}");
-        assert!(default.contains("1 testes"), "{default}");
+        assert!(default.contains("1 teste(s)"), "{default}");
 
         let all = tool
             .handle_map(serde_json::json!({ "include_tests": true }))

@@ -764,4 +764,38 @@ mod tests {
         });
         assert!(out.content[0].text.contains(":1-3`"), "{}", out.content[0].text);
     }
+
+    #[test]
+    fn a_long_symbol_that_fits_is_recorded_as_complete() {
+        let dir = tempdir().unwrap();
+        let body: Vec<String> = (0..120).map(|i| format!("    let v{i} = {i};")).collect();
+        fs::write(
+            dir.path().join("long.rs"),
+            format!("pub fn long_fn() -> u32 {{\n{}\n    0\n}}\n", body.join("\n")),
+        )
+        .unwrap();
+
+        let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
+        let (tool, _) = tool_with_ledger(dir.path(), ledger);
+        let read = |budget: usize| {
+            tool.read(ReadParams {
+                path: "long.rs".to_string(),
+                symbol: Some("long_fn".to_string()),
+                budget_tokens: Some(budget),
+                repeat: None,
+            })
+            .content[0]
+            .text
+            .clone()
+        };
+
+        let first = read(4000);
+        assert!(first.contains("let v119"), "{first}");
+        let second = read(4000);
+        assert!(
+            second.contains("Já entregue nesta sessão"),
+            "a complete long read must become a pointer: {second}"
+        );
+    }
+
 }
