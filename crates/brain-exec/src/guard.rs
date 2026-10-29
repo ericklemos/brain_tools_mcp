@@ -267,9 +267,19 @@ fn check_segment(segment: &Segment) -> Option<Blocked> {
         if is_wrapper(&program) {
             match program.as_str() {
                 "bash" | "sh" | "zsh" | "dash" | "ksh" => {
-                    return shell_script(&words).and_then(|script| check(&script));
+                    if let Some(script) = shell_script(&words) {
+                        if let Some(blocked) = check(&script) {
+                            return Some(blocked);
+                        }
+                    }
+                    break;
                 }
-                "eval" => return check(&words[1..].join(" ")),
+                "eval" => {
+                    if let Some(blocked) = check(&words[1..].join(" ")) {
+                        return Some(blocked);
+                    }
+                    break;
+                }
                 "busybox" => {
                     words.remove(0);
                     continue;
@@ -278,7 +288,7 @@ fn check_segment(segment: &Segment) -> Option<Blocked> {
                     words.remove(0);
                     skip_options(&mut words, XARGS_VALUE_OPTIONS);
                     if words.is_empty() {
-                        return None;
+                        break;
                     }
                     continue;
                 }
@@ -630,6 +640,14 @@ mod tests {
             Some((">> out.txt".into(), "brain_write"))
         );
         assert_eq!(blocked("echo hi 2>&1 > /dev/null"), None);
+    }
+
+    #[test]
+    fn a_write_outside_a_nested_shell_is_still_a_write() {
+        assert_eq!(
+            blocked("bash -c 'echo hi' > out.txt"),
+            Some(("> out.txt".into(), "brain_write"))
+        );
     }
 
     #[test]
