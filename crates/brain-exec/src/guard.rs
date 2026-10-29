@@ -48,12 +48,15 @@ pub fn tokenize(command: &str) -> Vec<Token> {
         }
     }
 
+    let chars: Vec<char> = command.chars().collect();
+    let mut index = 0;
     let mut tokens = Vec::new();
     let mut word = String::new();
     let mut in_word = false;
-    let mut chars = command.chars().peekable();
 
-    while let Some(c) = chars.next() {
+    while index < chars.len() {
+        let c = chars[index];
+        index += 1;
         match c {
             ' ' | '\t' | '\r' => flush(&mut tokens, &mut word, &mut in_word),
             '\n' => {
@@ -62,60 +65,58 @@ pub fn tokenize(command: &str) -> Vec<Token> {
             }
             '\'' => {
                 in_word = true;
-                for c in chars.by_ref() {
-                    if c == '\'' {
-                        break;
-                    }
-                    word.push(c);
+                while index < chars.len() && chars[index] != '\'' {
+                    word.push(chars[index]);
+                    index += 1;
+                }
+                if index < chars.len() {
+                    index += 1;
                 }
             }
             '"' => {
                 in_word = true;
-                while let Some(c) = chars.next() {
-                    match c {
-                        '"' => break,
-                        '\\' => {
-                            if let Some(escaped) = chars.next() {
-                                word.push(escaped);
-                            }
-                        }
-                        _ => word.push(c),
+                while index < chars.len() && chars[index] != '"' {
+                    if chars[index] == '\\' && index + 1 < chars.len() {
+                        index += 1;
                     }
+                    word.push(chars[index]);
+                    index += 1;
+                }
+                if index < chars.len() {
+                    index += 1;
                 }
             }
             '\\' => {
                 in_word = true;
-                if let Some(escaped) = chars.next() {
-                    word.push(escaped);
+                if index < chars.len() {
+                    word.push(chars[index]);
+                    index += 1;
                 }
             }
             '#' if !in_word => {
-                while let Some(c) = chars.next() {
-                    if c == '\n' {
-                        tokens.push(Token::Op(Op::Semi));
-                        break;
-                    }
+                while index < chars.len() && chars[index] != '\n' {
+                    index += 1;
                 }
             }
             '|' => {
                 flush(&mut tokens, &mut word, &mut in_word);
-                if chars.peek() == Some(&'|') {
-                    chars.next();
+                if chars.get(index) == Some(&'|') {
+                    index += 1;
                     tokens.push(Token::Op(Op::Or));
                 } else {
-                    if chars.peek() == Some(&'&') {
-                        chars.next();
+                    if chars.get(index) == Some(&'&') {
+                        index += 1;
                     }
                     tokens.push(Token::Op(Op::Pipe));
                 }
             }
             '&' => {
                 flush(&mut tokens, &mut word, &mut in_word);
-                if chars.peek() == Some(&'&') {
-                    chars.next();
+                if chars.get(index) == Some(&'&') {
+                    index += 1;
                     tokens.push(Token::Op(Op::And));
-                } else if chars.peek() == Some(&'>') {
-                    chars.next();
+                } else if chars.get(index) == Some(&'>') {
+                    index += 1;
                     tokens.push(Token::Op(Op::RedirectAll));
                 } else {
                     tokens.push(Token::Op(Op::Background));
@@ -127,27 +128,27 @@ pub fn tokenize(command: &str) -> Vec<Token> {
             }
             '>' => {
                 // `2> file`: the digit is a file descriptor, not a word.
-                if in_word && word.chars().all(|c| c.is_ascii_digit()) {
+                if in_word && word.chars().all(|d| d.is_ascii_digit()) {
                     word.clear();
                     in_word = false;
                 } else {
                     flush(&mut tokens, &mut word, &mut in_word);
                 }
-                if chars.peek() == Some(&'>') {
-                    chars.next();
+                if chars.get(index) == Some(&'>') {
+                    index += 1;
                     tokens.push(Token::Op(Op::Append));
                 } else {
                     tokens.push(Token::Op(Op::Redirect));
                     // `>&1`: duplication of a descriptor, not a write to a file.
-                    if chars.peek() == Some(&'&') {
-                        chars.next();
+                    if chars.get(index) == Some(&'&') {
+                        index += 1;
                         let mut fd = String::from("&");
-                        while let Some(d) = chars.peek() {
+                        while let Some(d) = chars.get(index) {
                             if !d.is_ascii_digit() {
                                 break;
                             }
                             fd.push(*d);
-                            chars.next();
+                            index += 1;
                         }
                         if fd.len() > 1 {
                             tokens.push(Token::Word(fd));
@@ -402,9 +403,7 @@ const SUDO_VALUE_OPTIONS: &[&str] = &["-u", "-g", "-C", "-p", "-h", "-r", "-t", 
 const ENV_VALUE_OPTIONS: &[&str] = &["-u", "-C", "-S", "--unset", "--chdir"];
 const TIME_VALUE_OPTIONS: &[&str] = &["-f", "-o", "--format", "--output"];
 const NICE_VALUE_OPTIONS: &[&str] = &["-n", "--adjustment"];
-const STDBUF_VALUE_OPTIONS: &[&str] = &[
-    "-i", "-o", "-e", "--input", "--output", "--error",
-];
+const STDBUF_VALUE_OPTIONS: &[&str] = &["-i", "-o", "-e", "--input", "--output", "--error"];
 const XARGS_VALUE_OPTIONS: &[&str] = &[
     "-n",
     "-P",
@@ -489,9 +488,7 @@ fn is_assignment(word: &str) -> bool {
     };
     !name.is_empty()
         && !name.contains('/')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_ignored_target(target: &str) -> bool {
