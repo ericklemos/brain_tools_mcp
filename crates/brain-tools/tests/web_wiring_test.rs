@@ -52,7 +52,14 @@ fn web_tools_are_registered_in_the_real_binary() {
         .find(|tool| tool.name == "brain_websearch")
         .expect("brain_websearch must be registered");
     assert_eq!(search.input_schema["required"][0], "query");
-    assert!(search.description.contains("brain_fetch"));
+
+    let research = list
+        .tools
+        .iter()
+        .find(|tool| tool.name == "brain_research")
+        .expect("brain_research must be registered");
+    assert_eq!(research.input_schema["required"][0], "query");
+    assert!(research.description.contains("brain_fetch"));
 
     let _ = child.kill();
     let _ = child.wait();

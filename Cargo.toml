@@ -63,5 +63,17 @@ dom_smoothie = "0.19"
 tempfile = "3.10"
 
 [profile.release]
-lto = "thin"
+# Runtime máximo: um único CGU e LTO completo entre crates deixam o LLVM
+# inlinar através das fronteiras de brain-kernel/search/graph/exec/web/tools
+# e das dependências (regex, tree-sitter, serde_json, tokio). Custo: o build
+# de release fica bem mais lento que com LTO thin.
+opt-level = 3
+lto = "fat"
 codegen-units = 1
+incremental = false
+debug = false
+debug-assertions = false
+overflow-checks = false
+# Mantém unwind para que um panic em uma tool não derrube o daemon MCP.
+# Trocar por "abort" rende mais alguns por cento e um binário menor.
+panic = "unwind"

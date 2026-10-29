@@ -9,6 +9,10 @@ authors.workspace = true
 name = "brain-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "brain-bench-web"
+path = "src/bin/web_bench.rs"
+
 [dependencies]
 brain-kernel = { path = "../brain-kernel" }
 serde = { workspace = true }

@@ -1,0 +1,182 @@
+[
+  {
+    "id": "rust-hello",
+    "url": "https://doc.rust-lang.org/book/ch01-02-hello-world.html",
+    "question": "how do I compile and run a rust file with rustc",
+    "expect": "rustc main.rs"
+  },
+  {
+    "id": "rust-ownership",
+    "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+    "question": "what is ownership in rust",
+    "expect": "ownership"
+  },
+  {
+    "id": "rust-panic",
+    "url": "https://doc.rust-lang.org/book/ch09-01-unrecoverable-errors-with-panic.html",
+    "question": "how does panic work",
+    "expect": "panic!"
+  },
+  {
+    "id": "rust-traits",
+    "url": "https://doc.rust-lang.org/book/ch10-02-traits.html",
+    "question": "what are trait bounds",
+    "expect": "trait bounds"
+  },
+  {
+    "id": "rust-closures",
+    "url": "https://doc.rust-lang.org/book/ch13-01-closures.html",
+    "question": "what is FnOnce",
+    "expect": "FnOnce"
+  },
+  {
+    "id": "rust-box",
+    "url": "https://doc.rust-lang.org/book/ch15-01-box.html",
+    "question": "what is Box used for",
+    "expect": "Box<T>"
+  },
+  {
+    "id": "rust-threads",
+    "url": "https://doc.rust-lang.org/book/ch16-01-threads.html",
+    "question": "how to spawn a thread",
+    "expect": "thread::spawn"
+  },
+  {
+    "id": "serde-docs",
+    "url": "https://docs.rs/serde/latest/serde/",
+    "question": "what is the Serialize trait",
+    "expect": "Serialize"
+  },
+  {
+    "id": "tokio-docs",
+    "url": "https://docs.rs/tokio/latest/tokio/",
+    "question": "what is the tokio runtime",
+    "expect": "Runtime"
+  },
+  {
+    "id": "dom-smoothie",
+    "url": "https://docs.rs/dom_smoothie/latest/dom_smoothie/",
+    "question": "how does readability extract content",
+    "expect": "Readability"
+  },
+  {
+    "id": "mdn-array-map",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map",
+    "question": "what does the map callback receive",
+    "expect": "callbackFn"
+  },
+  {
+    "id": "mdn-promise",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise",
+    "question": "how to chain promises with then",
+    "expect": "then"
+  },
+  {
+    "id": "mdn-http",
+    "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Overview",
+    "question": "what is HTTP",
+    "expect": "HTTP"
+  },
+  {
+    "id": "python-asyncio",
+    "url": "https://docs.python.org/3/library/asyncio-eventloop.html",
+    "question": "what is the event loop",
+    "expect": "event loop"
+  },
+  {
+    "id": "python-dataclasses",
+    "url": "https://docs.python.org/3/library/dataclasses.html",
+    "question": "how to use dataclass",
+    "expect": "dataclass"
+  },
+  {
+    "id": "go-fmt",
+    "url": "https://pkg.go.dev/fmt",
+    "question": "how to format with Printf",
+    "expect": "Printf"
+  },
+  {
+    "id": "go-http",
+    "url": "https://pkg.go.dev/net/http",
+    "question": "how to start an HTTP server",
+    "expect": "ListenAndServe"
+  },
+  {
+    "id": "pg-select",
+    "url": "https://www.postgresql.org/docs/current/sql-select.html",
+    "question": "how to write a SELECT query",
+    "expect": "SELECT"
+  },
+  {
+    "id": "pg-createindex",
+    "url": "https://www.postgresql.org/docs/current/sql-createindex.html",
+    "question": "how to create an index",
+    "expect": "CREATE INDEX"
+  },
+  {
+    "id": "k8s-pods",
+    "url": "https://kubernetes.io/docs/concepts/workloads/pods/",
+    "question": "what is a pod",
+    "expect": "Pod"
+  },
+  {
+    "id": "dockerfile",
+    "url": "https://docs.docker.com/reference/dockerfile/",
+    "question": "what does FROM do in a Dockerfile",
+    "expect": "FROM"
+  },
+  {
+    "id": "node-fs",
+    "url": "https://nodejs.org/api/fs.html",
+    "question": "how to read a file",
+    "expect": "readFile"
+  },
+  {
+    "id": "git-rebase",
+    "url": "https://git-scm.com/docs/git-rebase",
+    "question": "how to rebase",
+    "expect": "rebase"
+  },
+  {
+    "id": "rfc9110",
+    "url": "https://www.rfc-editor.org/rfc/rfc9110.html",
+    "question": "what is a status code",
+    "expect": "status code"
+  },
+  {
+    "id": "wiki-http",
+    "url": "https://en.wikipedia.org/wiki/Hypertext_Transfer_Protocol",
+    "question": "what is the Hypertext Transfer Protocol",
+    "expect": "Hypertext Transfer Protocol"
+  },
+  {
+    "id": "wiki-tls",
+    "url": "https://en.wikipedia.org/wiki/Transport_Layer_Security",
+    "question": "what is TLS",
+    "expect": "Transport Layer Security"
+  },
+  {
+    "id": "wiki-rust",
+    "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+    "question": "what is memory safety in Rust",
+    "expect": "memory safety"
+  },
+  {
+    "id": "wiki-postgres",
+    "url": "https://en.wikipedia.org/wiki/PostgreSQL",
+    "question": "what is PostgreSQL",
+    "expect": "PostgreSQL"
+  },
+  {
+    "id": "wiki-json",
+    "url": "https://en.wikipedia.org/wiki/JSON",
+    "question": "what is JSON",
+    "expect": "JSON"
+  },
+  {
+    "id": "wiki-utf8",
+    "url": "https://en.wikipedia.org/wiki/UTF-8",
+    "question": "what is UTF-8",
+    "expect": "UTF-8"
+  }
+]

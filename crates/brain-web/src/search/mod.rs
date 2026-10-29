@@ -6,6 +6,7 @@
 //! caller spends anything: a URL already in the fetch cache is marked, so the
 //! model knows a read is free.
 
+pub mod research;
 pub mod duckduckgo;
 pub mod marginalia;
 pub mod stackexchange;

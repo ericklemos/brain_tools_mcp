@@ -65,14 +65,15 @@ async fn main() -> anyhow::Result<()> {
         brain_web::http::HttpFetcher::new(Duration::from_secs(20), 4 * 1024 * 1024)
             .expect("http client"),
     );
-    brain_kernel::plugin::install(Arc::new(
+    let fetch_tool = Arc::new(
         brain_web::FetchTool::new(
             web_fetcher.clone(),
             config.root_dir.clone(),
             store.clone(),
         )
         .with_budget(config.default_budget_tokens),
-    ));
+    );
+    brain_kernel::plugin::install(fetch_tool.clone());
     let providers: Vec<Arc<dyn brain_web::search::SearchProvider>> = vec![
         Arc::new(brain_web::search::duckduckgo::DuckDuckGo::new(
             web_fetcher.clone(),
@@ -89,11 +90,19 @@ async fn main() -> anyhow::Result<()> {
     ];
     brain_kernel::plugin::install(Arc::new(
         brain_web::search::WebSearchTool::new(
-            providers,
+            providers.clone(),
             config.root_dir.clone(),
             store.clone(),
         )
         .with_budget(900),
+    ));
+    brain_kernel::plugin::install(Arc::new(
+        brain_web::search::research::ResearchTool::new(
+            providers,
+            fetch_tool,
+            store.clone(),
+        )
+        .with_budget(1200),
     ));
     // Remembering what this session already delivered is the cheapest token:
     // the one not sent twice.

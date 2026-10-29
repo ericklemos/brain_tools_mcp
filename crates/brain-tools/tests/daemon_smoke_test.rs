@@ -72,6 +72,7 @@ async fn test_daemon_smoke_stdio_purity() {
         vec![
             "brain_fetch",
             "brain_websearch",
+            "brain_research",
             "brain_search",
             "brain_context_graph",
             "brain_impact_check",
@@ -152,6 +153,7 @@ async fn a_tool_profile_removes_unlisted_tools_instead_of_hiding_them() {
         vec![
             "brain_fetch",
             "brain_websearch",
+            "brain_research",
             "brain_search",
             "brain_context_graph",
             "brain_impact_check",

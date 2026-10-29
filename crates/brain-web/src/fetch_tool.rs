@@ -217,6 +217,42 @@ impl ToolPlugin for FetchTool {
     }
 }
 
+
+/// One page reduced to the blocks a question needs. The research tool uses
+/// this instead of parsing a rendered string back into evidence.
+pub struct Evidence {
+    pub url: String,
+    pub title: String,
+    pub source: &'static str,
+    pub fetched_at: u64,
+    pub content_hash: String,
+    pub blocks: Vec<Block>,
+    pub total_blocks: usize,
+}
+
+impl FetchTool {
+    /// The same read the tool performs, without spending the token budget:
+    /// the caller decides how to present the evidence.
+    pub async fn evidence(&self, url: &str, question: Option<&str>) -> Result<Evidence> {
+        let params = FetchParams {
+            url: url.to_string(),
+            question: question.map(str::to_string),
+            budget_tokens: None,
+            max_blocks: None,
+            refresh: None,
+        };
+        let read = self.read(&params).await?;
+        Ok(Evidence {
+            url: read.page.url.clone(),
+            title: read.page.meta.title.clone(),
+            source: read.source,
+            fetched_at: read.fetched_at,
+            content_hash: read.content_hash,
+            total_blocks: read.page.blocks.len(),
+            blocks: read.page.blocks,
+        })
+    }
+}
 struct Read {
     page: Page,
     source: &'static str,

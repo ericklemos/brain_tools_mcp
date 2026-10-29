@@ -16,6 +16,6 @@ pub mod search;
 pub mod util;
 
 pub use error::{FailureKind, WebError};
-pub use fetch_tool::FetchTool;
+pub use fetch_tool::{Evidence, FetchTool};
 pub use model::{Block, BlockKind, Page, PageMeta};
 pub use search::WebSearchTool;
