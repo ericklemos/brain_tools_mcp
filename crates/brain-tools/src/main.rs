@@ -1,17 +1,17 @@
+use brain_engine::ValidationClient;
+use brain_exec::{ExecTool, ShellTool, ShellUsageLog};
 use brain_graph::assert_tool::AssertTool;
 use brain_graph::builder::GraphBuilder;
 use brain_graph::diff_tool::DiffTool;
 use brain_graph::edit_tool::EditTool;
-use brain_graph::patch_tool::PatchTool;
-use brain_graph::write_tool::WriteTool;
-use brain_graph::graph_tool::{GraphContextTool, GraphImpactTool, GraphHandler};
+use brain_graph::graph_tool::{GraphContextTool, GraphHandler, GraphImpactTool};
 use brain_graph::history_tool::HistoryTool;
 use brain_graph::map_tool::MapTool;
+use brain_graph::patch_tool::PatchTool;
 use brain_graph::read_tool::ReadTool;
 use brain_graph::trace_tool::TraceTool;
 use brain_graph::watcher::GraphWatcher;
-use brain_engine::ValidationClient;
-use brain_exec::{ExecTool, ShellTool, ShellUsageLog};
+use brain_graph::write_tool::WriteTool;
 use brain_kernel::deliveries::DeliveryLedger;
 use brain_kernel::ledger_tool::LedgerTool;
 use brain_kernel::peek_tool::PeekTool;
@@ -38,7 +38,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Direct all tracing/logging strictly to stderr
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level)))
+        .with(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level)),
+        )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
@@ -157,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
                     config.default_budget_tokens,
                     Duration::from_secs(config.shell_timeout_secs),
                 )
+                .with_guard(config.shell_guard)
                 .with_usage_log(shell_usage_log.clone()),
             ))
             .map_err(|e| anyhow::anyhow!(e))?;

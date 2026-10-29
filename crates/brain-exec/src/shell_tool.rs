@@ -1,3 +1,4 @@
+use crate::guard;
 use crate::usage_log::{now_millis, ShellUsageEntry, ShellUsageLog};
 use brain_kernel::budget::{self, Section};
 use brain_kernel::plugin::ToolPlugin;
@@ -24,6 +25,7 @@ pub struct ShellTool {
     store: Arc<ResponseStore>,
     default_budget_tokens: usize,
     usage_log: Option<Arc<ShellUsageLog>>,
+    guard: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,7 +48,14 @@ impl ShellTool {
             store,
             default_budget_tokens,
             usage_log: None,
+            guard: true,
         }
+    }
+
+    /// Enables or disables the command guard. It is on by default.
+    pub fn with_guard(mut self, guard: bool) -> Self {
+        self.guard = guard;
+        self
     }
 
     /// Attaches a local usage log. Without it, `brain_shell` keeps no trace.
@@ -75,6 +84,25 @@ impl ShellTool {
             .timeout_secs
             .map(|secs| Duration::from_secs(secs.max(1)))
             .unwrap_or(self.timeout);
+
+        if self.guard {
+            if let Some(blocked) = guard::check(&params.command) {
+                let message = guard::message(&blocked);
+                self.write_usage(self.usage_entry(
+                    &params,
+                    "blocked",
+                    None,
+                    false,
+                    Duration::ZERO,
+                    timeout,
+                    "",
+                    "",
+                    Some(message.clone()),
+                ))
+                .await;
+                return CallToolResult::error(message);
+            }
+        }
 
         let started = std::time::Instant::now();
         let mut child = match Command::new("bash")
@@ -268,7 +296,7 @@ impl ToolPlugin for ShellTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_shell".to_string(),
-            description: "Executa comando em `bash -lc` no root e devolve stdout/stderr/código. Substitui `shell` para git e formatadores; não é sandbox.".to_string(),
+            description: "Executa comando em `bash -lc` no root e devolve stdout/stderr/código. Substitui `shell` para git e formatadores; não é sandbox. Comandos cobertos por brain_search/brain_read/brain_map/brain_edit/brain_exec são recusados.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -414,5 +442,53 @@ mod tests {
         let entry: ShellUsageEntry = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(entry.status, "error");
         assert!(entry.error.unwrap().contains("Falha ao iniciar"));
+    }
+
+    #[tokio::test]
+    async fn a_covered_command_is_refused_before_spawning() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(ShellUsageLog::new(dir.path().join("usage.jsonl"), false));
+        let tool = ShellTool::new(
+            dir.path(),
+            Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024)),
+            2000,
+            Duration::from_secs(5),
+        )
+        .with_guard(true)
+        .with_usage_log(Some(log.clone()));
+
+        let out = tool
+            .run(ShellParams {
+                command: "grep needle Cargo.toml".into(),
+                timeout_secs: None,
+                budget_tokens: None,
+            })
+            .await;
+        assert_eq!(out.is_error, Some(true));
+        assert!(out.content[0].text.contains("brain_search"));
+
+        let entry: ShellUsageEntry =
+            serde_json::from_str(std::fs::read_to_string(log.path()).unwrap().trim()).unwrap();
+        assert_eq!(entry.status, "blocked");
+        assert!(entry.error.unwrap().contains("brain_search"));
+    }
+
+    #[tokio::test]
+    async fn the_guard_can_be_turned_off() {
+        let out = ShellTool::new(
+            ".",
+            Arc::new(ResponseStore::new(Duration::from_secs(60), 1024 * 1024)),
+            2000,
+            Duration::from_secs(5),
+        )
+        .with_guard(false)
+        .run(ShellParams {
+            command: "grep brain-exec Cargo.toml".into(),
+            timeout_secs: None,
+            budget_tokens: None,
+        })
+        .await;
+        assert!(out.is_error.is_none());
+        assert!(out.content[0].text.contains("brain-exec"));
     }
 }

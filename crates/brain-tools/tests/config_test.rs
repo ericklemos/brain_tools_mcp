@@ -46,7 +46,10 @@ fn test_custom_cli_args() {
     ]);
 
     assert_eq!(config.root_dir, PathBuf::from("/tmp/project"));
-    assert_eq!(config.model_path, Some(PathBuf::from("/path/to/model.gguf")));
+    assert_eq!(
+        config.model_path,
+        Some(PathBuf::from("/path/to/model.gguf"))
+    );
     assert_eq!(config.gpu_layers, 24);
     assert_eq!(config.threads, Some(8));
     assert_eq!(config.default_min_confidence, 0.80);
@@ -91,4 +94,14 @@ fn the_shell_usage_log_path_is_configurable() {
 fn the_shell_usage_log_full_mode_is_opt_in() {
     let config = Config::parse_from(["brain-tools", "--shell-usage-log-full"]);
     assert!(config.shell_usage_log_full);
+}
+
+#[test]
+fn the_shell_guard_is_on_by_default() {
+    assert!(Config::parse_from(["brain-tools"]).shell_guard);
+}
+
+#[test]
+fn the_shell_guard_can_be_turned_off() {
+    assert!(!Config::parse_from(["brain-tools", "--shell-guard", "false"]).shell_guard);
 }

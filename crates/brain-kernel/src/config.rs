@@ -55,7 +55,12 @@ pub struct Config {
     pub root_dir: PathBuf,
 
     /// Tool set exposed over MCP: full, core (edit loop) or read (review)
-    #[arg(long = "tools", env = "BRAIN_TOOLS", value_enum, default_value = "full")]
+    #[arg(
+        long = "tools",
+        env = "BRAIN_TOOLS",
+        value_enum,
+        default_value = "full"
+    )]
     pub tool_profile: ToolProfile,
 
     /// Path to GGUF model file (e.g. models/vllm-d3-edge-Q8_0.gguf)
@@ -131,6 +136,15 @@ pub struct Config {
     /// Do not register brain_shell, for hosts where arbitrary commands are not acceptable
     #[arg(long, env = "BRAIN_SHELL_DISABLED", default_value_t = false)]
     pub shell_disabled: bool,
+
+    /// Refuse brain_shell commands that a brain tool already covers
+    #[arg(
+        long,
+        env = "BRAIN_SHELL_GUARD",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    pub shell_guard: bool,
 
     /// Write brain_shell usage metadata to a local JSONL file (`false` disables)
     #[arg(
