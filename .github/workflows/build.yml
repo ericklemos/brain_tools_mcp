@@ -35,44 +35,44 @@ jobs:
             target: x86_64-unknown-linux-gnu
             bin: brain-tools
             isa: generic
-            config: ''
+            rustflags: ''
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: brain-tools
             isa: x86-64-v2
-            config: '--config target.x86_64-unknown-linux-gnu.rustflags=["-Ctarget-cpu=x86-64-v2"]'
+            rustflags: '-Ctarget-cpu=x86-64-v2'
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: brain-tools
             isa: x86-64-v3
-            config: '--config target.x86_64-unknown-linux-gnu.rustflags=["-Ctarget-cpu=x86-64-v3"]'
+            rustflags: '-Ctarget-cpu=x86-64-v3'
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: brain-tools
             isa: x86-64-v4
-            config: '--config target.x86_64-unknown-linux-gnu.rustflags=["-Ctarget-cpu=x86-64-v4"]'
+            rustflags: '-Ctarget-cpu=x86-64-v4'
           # macOS and Windows: generic plus the AVX2 baseline. v4 is skipped on
           # hosted runners because their CPUs are not guaranteed to have AVX-512.
           - os: macos-15-intel
             target: x86_64-apple-darwin
             bin: brain-tools
             isa: generic
-            config: ''
+            rustflags: ''
           - os: macos-15-intel
             target: x86_64-apple-darwin
             bin: brain-tools
             isa: x86-64-v3
-            config: '--config target.x86_64-apple-darwin.rustflags=["-Ctarget-cpu=x86-64-v3"]'
+            rustflags: '-Ctarget-cpu=x86-64-v3'
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: brain-tools.exe
             isa: generic
-            config: ''
+            rustflags: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: brain-tools.exe
             isa: x86-64-v3
-            config: '--config target.x86_64-pc-windows-msvc.rustflags=["-Ctarget-cpu=x86-64-v3"]'
+            rustflags: '-Ctarget-cpu=x86-64-v3'
 
     steps:
       - uses: actions/checkout@v4
@@ -80,11 +80,24 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
-      # `--config target.<triple>.rustflags` applies the CPU baseline to the
+      # `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` applies the CPU baseline to the
       # target artifacts only, never to the build scripts and proc macros the
-      # runner itself has to execute.
+      # runner itself has to execute. It is used instead of
+      # `--config target.<triple>.rustflags=[...]` because the step's shell
+      # (bash and pwsh alike) strips the quotes of the TOML array when the
+      # matrix value is interpolated into the script, leaving
+      # `=[-Ctarget-cpu=...]` and failing to parse it as TOML.
       - name: Build release binary
-        run: cargo build --release --locked -p brain-tools --target ${{ matrix.target }} ${{ matrix.config }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          RUSTFLAGS_ISA: ${{ matrix.rustflags }}
+        run: |
+          if [ -n "$RUSTFLAGS_ISA" ]; then
+            triple_upper=$(printf '%s' "$TARGET" | tr 'a-z-' 'A-Z_')
+            export "CARGO_TARGET_${triple_upper}_RUSTFLAGS=$RUSTFLAGS_ISA"
+          fi
+          cargo build --release --locked -p brain-tools --target "$TARGET"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

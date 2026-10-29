@@ -1,0 +1,172 @@
+name: Release
+
+# Publica binários em GitHub Releases. Um push de tag (`git tag v0.1.0 && git
+# push origin v0.1.0`) compila a mesma matriz do workflow Build, empacota um
+# arquivo por target/ISA e cria a release com SHA256SUMS. A tag precisa casar
+# com a versão do workspace: o job `publish` recusa a publicação caso não case.
+#
+# A matriz é duplicada de build.yml de propósito: o Build roda em push de main e
+# serve de guarda contínua, enquanto este workflow só é acionado por tag e não
+# deve depender do estado da branch nem do bench (uma regressão de token não
+# pode reter um binário).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Reenviar a mesma tag cancela a publicação anterior; dois refs distintos
+  # (duas tags) nunca se cancelam entre si.
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }}, ${{ matrix.isa }})
+    runs-on: ${{ matrix.os }}
+    # Mesmo orçamento do workflow Build: LTO "fat" + codegen-units = 1 em um
+    # runner frio, com folga para o link.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: brain-tools
+            isa: generic
+            rustflags: ''
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: brain-tools
+            isa: x86-64-v2
+            rustflags: '-Ctarget-cpu=x86-64-v2'
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: brain-tools
+            isa: x86-64-v3
+            rustflags: '-Ctarget-cpu=x86-64-v3'
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: brain-tools
+            isa: x86-64-v4
+            rustflags: '-Ctarget-cpu=x86-64-v4'
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            bin: brain-tools
+            isa: generic
+            rustflags: ''
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            bin: brain-tools
+            isa: x86-64-v3
+            rustflags: '-Ctarget-cpu=x86-64-v3'
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: brain-tools.exe
+            isa: generic
+            rustflags: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: brain-tools.exe
+            isa: x86-64-v3
+            rustflags: '-Ctarget-cpu=x86-64-v3'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      # `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` atinge só os artefatos do target,
+      # nunca build scripts e proc macros executados no runner. Evita também o
+      # problema de aspas do `--config target.<triple>.rustflags=[...]`, que o
+      # shell remove antes de o cargo ver a expressão TOML.
+      - name: Build release binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          RUSTFLAGS_ISA: ${{ matrix.rustflags }}
+        run: |
+          if [ -n "$RUSTFLAGS_ISA" ]; then
+            triple_upper=$(printf '%s' "$TARGET" | tr 'a-z-' 'A-Z_')
+            export "CARGO_TARGET_${triple_upper}_RUSTFLAGS=$RUSTFLAGS_ISA"
+          fi
+          cargo build --release --locked -p brain-tools --target "$TARGET"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brain-tools-${{ matrix.target }}-${{ matrix.isa }}
+          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches the crate version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "brain-tools") | .version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match brain-tools $version" >&2
+            exit 1
+          fi
+
+      - name: Download the built binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: brain-tools-*
+          path: artifacts
+
+      # Um arquivo por artefato, com o target e o baseline de CPU no nome:
+      # quem baixa a variante v3 nunca a confunde com o binário genérico.
+      - name: Package
+        run: |
+          version="$GITHUB_REF_NAME"
+          version="${version#v}"
+          dist="$PWD/dist"
+          staging=$(mktemp -d)
+          mkdir -p "$dist"
+          for dir in artifacts/brain-tools-*; do
+            name="${dir#artifacts/brain-tools-}"
+            root="brain-tools-$version-$name"
+            mkdir -p "$staging/$root"
+            if [ -f "$dir/brain-tools.exe" ]; then
+              cp "$dir/brain-tools.exe" "$staging/$root/"
+              ( cd "$staging" && zip -qr "$dist/$root.zip" "$root" )
+            else
+              cp "$dir/brain-tools" "$staging/$root/"
+              tar -czf "$dist/$root.tar.gz" -C "$staging" "$root"
+            fi
+          done
+          ( cd "$dist" && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS )
+
+      # Idempotente: um re-run depois de uma publicação interrompida atualiza
+      # os assets em vez de falhar porque a release já existe.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            flags=(--verify-tag --generate-notes --title "brain-tools $GITHUB_REF_NAME")
+            # Tags de pré-release (v0.2.0-rc1) não viram "latest".
+            case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+            gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"
+          fi
