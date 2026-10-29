@@ -25,7 +25,7 @@ quiser que o texto de regras se chame `opencode.md`, registre-o em `instructions
 | `brain_edit` | `edit` por símbolo | Corpo por nome + hash do arquivo; recusa versão divergente |
 | `brain_write` | `write` | Arquivo inteiro (configs, docs, arquivos novos) com hash/`overwrite` |
 | `brain_patch` | `patch` / `git apply` | Diff unificado: arquivos novos, remoções, trechos fora de símbolos |
-| `brain_shell` | `shell` | Comando em `bash -lc` com cwd no root; `--shell-disabled` remove |
+| `brain_shell` | `shell` | Comando em `bash -lc` com cwd no root; guarda recusa comandos cobertos (`--shell-guard false` desliga); `--shell-disabled` remove |
 | `brain_map` | `glob` + orientação | Só arquivos de código (Rust/Kotlin) |
 | `brain_context_graph` / `brain_impact_check` | inspeção manual de chamadas | Quem chama, o que quebra |
 | `brain_peek` | paginação de leitura | Recupera o que estourou o budget |
@@ -108,7 +108,7 @@ Ordem de prioridade:
 4. `brain_map` — orientação quando você não sabe onde está.
 5. `brain_edit` — editar o corpo de um símbolo já visto, com o hash do `brain_read`.
 6. `brain_write` / `brain_patch` — arquivo inteiro ou diff unificado.
-7. `brain_exec` — build, check, test, clippy. `brain_shell` só para git/formatador/ferramenta externa.
+7. `brain_exec` — build, check, test, clippy. `brain_shell` só para git/formatador/ferramenta externa; a guarda recusa comandos cobertos por outra tool.
 
 Não use `read`, `grep`, `glob` nem `shell` para conferir o que o brain-tools já
 entregou. Score baixo ordena candidatas entre si; não mede veracidade. Se a busca
@@ -201,6 +201,7 @@ edição. O curinga `brain-tools_*` libera todas as atuais — inclusive `brain_
 | Imagens, PDFs, binários | `read` do OpenCode faz isso; `brain_read` é texto e recusa fora do root |
 | `AGENTS.md` aninhado | A descoberta é disparada por leitura/listagem; sem `read`, só o da raiz carrega |
 | Trabalhar fora do workspace | `brain_read` recusa traversal e caminho fora do root |
+| Pesquisar ou ler pelo shell | A guarda do `brain_shell` recusa `grep`/`sed`/`cat`/`find`/`ls` e manda usar `brain_search`/`brain_read`/`brain_map`; `--shell-guard false` desliga |
 
 `brain_shell` é poder de shell explícito, não um sandbox. Se "somente leitura" for
 uma garantia de segurança e não só de comportamento, suba o servidor com

@@ -11,7 +11,7 @@ Ordem de prioridade:
 4. `brain_map` — orientação quando você não sabe onde está.
 5. `brain_edit` — editar o corpo de um símbolo já visto, com o hash do `brain_read`.
 6. `brain_write` / `brain_patch` — arquivo inteiro ou diff unificado.
-7. `brain_exec` — build, check, test, clippy. `brain_shell` só para git/formatador/ferramenta externa.
+7. `brain_exec` — build, check, test, clippy. `brain_shell` só para git/formatador/ferramenta externa; a guarda recusa comandos cobertos por outra tool (`--shell-guard false` desliga).
 
 Não use `read`, `grep`, `glob` nem `shell` para conferir o que o brain-tools já
 entregou. Score baixo ordena candidatas entre si; não mede veracidade. Se a busca
