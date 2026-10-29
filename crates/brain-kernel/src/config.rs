@@ -27,6 +27,7 @@ impl ToolProfile {
                 "brain_write",
                 "brain_patch",
                 "brain_map",
+                "brain_websearch",
                 "brain_fetch",
             ]),
             Self::Read => Some(&[
@@ -39,6 +40,7 @@ impl ToolProfile {
                 "brain_assert",
                 "brain_diff",
                 "brain_why",
+                "brain_websearch",
                 "brain_fetch",
             ]),
         }
@@ -65,15 +67,7 @@ pub struct Config {
     )]
     pub tool_profile: ToolProfile,
 
-    /// Path to GGUF model file (e.g. models/vllm-d3-edge-Q8_0.gguf)
-    #[arg(short = 'm', long, env = "BRAIN_MODEL_PATH")]
-    pub model_path: Option<PathBuf>,
-
-    /// Number of GPU layers to offload to CUDA/Vulkan/Metal
-    #[arg(long, env = "BRAIN_GPU_LAYERS", default_value_t = 33)]
-    pub gpu_layers: u32,
-
-    /// Number of threads for CPU inference and search
+    /// Number of threads for search
     #[arg(short = 't', long, env = "BRAIN_THREADS")]
     pub threads: Option<usize>,
 
@@ -81,7 +75,7 @@ pub struct Config {
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub log_level: String,
 
-    /// Default minimum confidence threshold for model validation (0.0 - 1.0)
+    /// Default minimum confidence threshold for brain_search (0.0 - 1.0)
     #[arg(long, env = "BRAIN_MIN_CONFIDENCE", default_value_t = 0.65)]
     pub default_min_confidence: f32,
 
@@ -89,7 +83,7 @@ pub struct Config {
     #[arg(long, env = "BRAIN_MAX_RESULTS", default_value_t = 5)]
     pub default_max_results: usize,
 
-    /// How many candidates (best lexical matches) reach the semantic model
+    /// How many candidates the lexical ranker considers
     #[arg(long, env = "BRAIN_MAX_VALIDATE_CANDIDATES", default_value_t = 24)]
     pub max_validate_candidates: usize,
 
@@ -166,22 +160,6 @@ pub struct Config {
     pub shell_usage_log_path: PathBuf,
 
     /// Include the raw command and the first 200 chars of stdout/stderr in the log
-    #[arg(long, env = "BRAIN_SHELL_USAGE_LOG_FULL")]
+    #[arg(long, env = "BRAIN_SHELL_USAGE_LOG_FULL", default_value_t = false)]
     pub shell_usage_log_full: bool,
-}
-
-impl Config {
-    /// Resolves default model path: if not explicitly provided, checks if models/vllm-d3-edge-Q8_0.gguf exists
-    pub fn resolved_model_path(&self) -> Option<PathBuf> {
-        if let Some(ref path) = self.model_path {
-            return Some(path.clone());
-        }
-
-        let default_candidate = PathBuf::from("models/vllm-d3-edge-Q8_0.gguf");
-        if default_candidate.exists() {
-            Some(default_candidate)
-        } else {
-            None
-        }
-    }
 }

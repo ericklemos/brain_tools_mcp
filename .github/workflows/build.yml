@@ -17,54 +17,77 @@ env:
 
 jobs:
   build:
-    name: build (${{ matrix.target }})
+    name: build (${{ matrix.target }}, ${{ matrix.isa }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
+      # One artifact per target *and* ISA baseline. The generic build is the
+      # fallback that must run anywhere; the x86-64-v* builds are opt-in and
+      # declare their minimum CPU in the artifact name, so nobody downloads
+      # AVX2 code onto a pre-2013 machine by accident.
       matrix:
         include:
+          # Linux: the full ladder, including AVX-512.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: brain-tools
+            isa: generic
+            config: ''
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: brain-tools
+            isa: x86-64-v2
+            config: '--config target.x86_64-unknown-linux-gnu.rustflags=["-Ctarget-cpu=x86-64-v2"]'
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: brain-tools
+            isa: x86-64-v3
+            config: '--config target.x86_64-unknown-linux-gnu.rustflags=["-Ctarget-cpu=x86-64-v3"]'
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: brain-tools
+            isa: x86-64-v4
+            config: '--config target.x86_64-unknown-linux-gnu.rustflags=["-Ctarget-cpu=x86-64-v4"]'
+          # macOS and Windows: generic plus the AVX2 baseline. v4 is skipped on
+          # hosted runners because their CPUs are not guaranteed to have AVX-512.
           - os: macos-15-intel
             target: x86_64-apple-darwin
             bin: brain-tools
+            isa: generic
+            config: ''
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            bin: brain-tools
+            isa: x86-64-v3
+            config: '--config target.x86_64-apple-darwin.rustflags=["-Ctarget-cpu=x86-64-v3"]'
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: brain-tools.exe
+            isa: generic
+            config: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: brain-tools.exe
+            isa: x86-64-v3
+            config: '--config target.x86_64-pc-windows-msvc.rustflags=["-Ctarget-cpu=x86-64-v3"]'
 
     steps:
       - uses: actions/checkout@v4
 
-      # llama-cpp-sys-2 builds the vendored llama.cpp with CMake and generates
-      # bindings with bindgen, which needs libclang on every platform.
-      - name: Install build prerequisites (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev ninja-build
-
-      - name: Install build prerequisites (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install cmake llvm
-          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
-
-      - name: Configure build prerequisites (Windows)
-        if: runner.os == 'Windows'
-        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$env:GITHUB_ENV"
-
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
+      # `--config target.<triple>.rustflags` applies the CPU baseline to the
+      # target artifacts only, never to the build scripts and proc macros the
+      # runner itself has to execute.
       - name: Build release binary
-        run: cargo build --release --locked -p brain-tools --target ${{ matrix.target }}
+        run: cargo build --release --locked -p brain-tools --target ${{ matrix.target }} ${{ matrix.config }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: brain-tools-${{ matrix.target }}
+          name: brain-tools-${{ matrix.target }}-${{ matrix.isa }}
           path: target/${{ matrix.target }}/release/${{ matrix.bin }}
           if-no-files-found: error
 
@@ -86,7 +109,7 @@ jobs:
       - name: Download release binary
         uses: actions/download-artifact@v4
         with:
-          name: brain-tools-x86_64-unknown-linux-gnu
+          name: brain-tools-x86_64-unknown-linux-gnu-generic
           path: bin
 
       - name: Make binary executable

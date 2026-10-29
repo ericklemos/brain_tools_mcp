@@ -95,6 +95,7 @@ impl FetchTool {
             url: url.clone(),
             etag: cached.as_ref().and_then(|entry| entry.etag.clone()),
             last_modified: cached.as_ref().and_then(|entry| entry.last_modified.clone()),
+            accept: None,
         };
 
         match self.fetcher.fetch(request).await {
@@ -111,6 +112,7 @@ impl FetchTool {
                             url: url.clone(),
                             etag: None,
                             last_modified: None,
+                            accept: None,
                         })
                         .await?;
                     self.absorb(response, &url)

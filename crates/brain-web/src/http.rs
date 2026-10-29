@@ -17,6 +17,9 @@ pub struct FetchRequest {
     /// instead of sending the body again.
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    /// Overrides the default negotiation. JSON and HTML APIs often answer an
+    /// Accept: text/markdown request with an error page.
+    pub accept: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +51,9 @@ impl HttpFetcher {
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(timeout)
+            // Some search frontends answer HTTP/2 clients with a challenge even
+            // when the same request over HTTP/1.1 is served normally.
+            .http1_only()
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()
             .map_err(|error| {
@@ -62,7 +68,10 @@ impl HttpFetcher {
         let mut builder = self
             .client
             .get(url)
-            .header(reqwest::header::ACCEPT, ACCEPT)
+            .header(
+                reqwest::header::ACCEPT,
+                request.accept.as_deref().unwrap_or(ACCEPT),
+            )
             .header(reqwest::header::ACCEPT_LANGUAGE, "pt-BR,pt;q=0.9,en;q=0.8");
         if let Some(etag) = &request.etag {
             builder = builder.header(reqwest::header::IF_NONE_MATCH, etag);

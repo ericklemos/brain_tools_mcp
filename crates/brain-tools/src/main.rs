@@ -57,20 +57,43 @@ async fn main() -> anyhow::Result<()> {
         config.handle_max_bytes,
     ));
 
-    // brain_fetch reads the web the way brain_read reads code: bounded blocks,
-    // a shared handle store, and no second download for the same URL. It is
-    // created here because it borrows this process's store; the registry,
-    // built below, adopts it.
+    // brain_fetch and brain_websearch read the web the way brain_read reads
+    // code: bounded blocks, a shared handle store, and no second download for
+    // the same URL. They are created here because they borrow this process's
+    // store; the registry, built below, adopts them.
+    let web_fetcher: Arc<dyn brain_web::http::Fetcher> = Arc::new(
+        brain_web::http::HttpFetcher::new(Duration::from_secs(20), 4 * 1024 * 1024)
+            .expect("http client"),
+    );
     brain_kernel::plugin::install(Arc::new(
         brain_web::FetchTool::new(
-            Arc::new(
-                brain_web::http::HttpFetcher::new(Duration::from_secs(20), 4 * 1024 * 1024)
-                    .expect("http client"),
-            ),
+            web_fetcher.clone(),
             config.root_dir.clone(),
             store.clone(),
         )
         .with_budget(config.default_budget_tokens),
+    ));
+    let providers: Vec<Arc<dyn brain_web::search::SearchProvider>> = vec![
+        Arc::new(brain_web::search::duckduckgo::DuckDuckGo::new(
+            web_fetcher.clone(),
+        )),
+        Arc::new(brain_web::search::marginalia::Marginalia::new(
+            web_fetcher.clone(),
+        )),
+        Arc::new(brain_web::search::stackexchange::StackExchange::new(
+            web_fetcher.clone(),
+        )),
+        Arc::new(brain_web::search::wikipedia::Wikipedia::new(
+            web_fetcher.clone(),
+        )),
+    ];
+    brain_kernel::plugin::install(Arc::new(
+        brain_web::search::WebSearchTool::new(
+            providers,
+            config.root_dir.clone(),
+            store.clone(),
+        )
+        .with_budget(900),
     ));
     // Remembering what this session already delivered is the cheapest token:
     // the one not sent twice.

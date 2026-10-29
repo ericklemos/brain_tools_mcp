@@ -3,11 +3,11 @@ use std::process::{Command, Stdio};
 
 use brain_kernel::protocol::{JsonRpcResponse, ListToolsResult};
 
-/// The wiring is not real until the binary lists the tool. This spawns the
-/// actual server, which is the only place `plugin::install` and
-/// `Registry::new` adoption meet.
+/// The wiring is not real until the binary lists the tools. This spawns the
+/// actual server, which is the only place preinstalled plugins and
+/// Registry::new adoption meet.
 #[test]
-fn brain_fetch_is_registered_in_the_real_binary() {
+fn web_tools_are_registered_in_the_real_binary() {
     let dir = tempfile::tempdir().unwrap();
     let bin = env!("CARGO_BIN_EXE_brain-tools");
     let mut child = Command::new(bin)
@@ -38,14 +38,21 @@ fn brain_fetch_is_registered_in_the_real_binary() {
     let list: ListToolsResult =
         serde_json::from_value(response.result.expect("result")).expect("tool list");
 
-    let tool = list
+    let fetch = list
         .tools
         .iter()
         .find(|tool| tool.name == "brain_fetch")
         .expect("brain_fetch must be registered");
+    assert_eq!(fetch.input_schema["required"][0], "url");
+    assert!(fetch.description.contains("brain_peek"));
 
-    assert_eq!(tool.input_schema["required"][0], "url");
-    assert!(tool.description.contains("brain_peek"));
+    let search = list
+        .tools
+        .iter()
+        .find(|tool| tool.name == "brain_websearch")
+        .expect("brain_websearch must be registered");
+    assert_eq!(search.input_schema["required"][0], "query");
+    assert!(search.description.contains("brain_fetch"));
 
     let _ = child.kill();
     let _ = child.wait();
