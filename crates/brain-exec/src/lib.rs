@@ -7,6 +7,7 @@
 
 pub mod cache;
 pub mod exec_tool;
+pub mod guard;
 pub mod parse_cargo;
 pub mod parse_libtest;
 pub mod runner;
