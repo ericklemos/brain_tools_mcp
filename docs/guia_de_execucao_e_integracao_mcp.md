@@ -6,23 +6,8 @@ Este guia descreve passo a passo como compilar, executar e conectar o servidor M
 
 ## 1. Preparação e Inicialização do Servidor
 
-### Passo 1: Download do Modelo `d3-edge` (Opcional, porém Recomendado)
-O `brain-tools` funciona em **modo fallback** (busca léxica + blocos sintáticos da AST) mesmo sem o modelo baixado. Para ativar a validação local por IA com scoring binário de logits na GPU:
+### Passo 1: Compilação do Executável
 
-```bash
-# Executa o script que baixa vllm-d3-edge-Q8_0.gguf (~806 MB) para models/
-./scripts/download_model.sh
-```
-
-### Passo 2: Compilação do Executável
-
-#### Opção A — Compilação com aceleração CUDA (NVIDIA GPU - Recomendada)
-Para aproveitar a sua GPU (ex.: GeForce RTX 5060):
-```bash
-cargo build --release --features cuda
-```
-
-#### Opção B — Compilação padrão (CPU / Modo Heurístico)
 ```bash
 cargo build --release
 ```
@@ -32,19 +17,17 @@ O binário final compilado estará localizado em:
 /home/desktop/Documents/projects/brain_tools/target/release/brain-tools
 ```
 
-### Passo 3: Teste de Inicialização Direta no Terminal
+### Passo 2: Teste de Inicialização Direta no Terminal
 Você pode testar a inicialização do daemon diretamente no terminal. Como o protocolo MCP opera em modo `stdio`, o servidor aguardará mensagens JSON-RPC no `stdin` e emitirá seus logs formatados no `stderr`:
 
 ```bash
 # Executa apontando para o diretório de um repositório
-./target/release/brain-tools --root-dir . --model-path models/vllm-d3-edge-Q8_0.gguf
+./target/release/brain-tools --root-dir .
 ```
 
 *Saída esperada no `stderr`:*
 ```text
 INFO Starting brain-tools MCP server daemon version="0.1.0" root_dir="."
-INFO Using GGUF model for validation model_path="models/vllm-d3-edge-Q8_0.gguf"
-INFO LlamaValidator successfully initialized path="models/vllm-d3-edge-Q8_0.gguf"
 ```
 *(Pressione `Ctrl + C` para encerrar o teste).*
 
@@ -56,12 +39,11 @@ O **Claude Code** oferece comandos diretos no terminal para gerenciar servidores
 
 ### Adicionar o `brain-tools` via `claude mcp add`
 
-#### Modo Completo (com modelo GGUF e diretório alvo):
+#### Modo com diretório explícito:
 ```bash
 claude mcp add brain-tools \
   /home/desktop/Documents/projects/brain_tools/target/release/brain-tools \
-  --root-dir /caminho/do/seu/projeto \
-  --model-path /home/desktop/Documents/projects/brain_tools/models/vllm-d3-edge-Q8_0.gguf
+  --root-dir /caminho/do/seu/projeto
 ```
 
 #### Modo Dinâmico (adotando o diretório atual do projeto em execução):
@@ -107,8 +89,6 @@ Edite o seu arquivo de configuração (no Linux: `~/.config/Claude/claude_deskto
       "command": "/home/desktop/Documents/projects/brain_tools/target/release/brain-tools",
       "args": [
         "--root-dir", "/home/desktop/Documents/projects/seu_repositorio",
-        "--model-path", "/home/desktop/Documents/projects/brain_tools/models/vllm-d3-edge-Q8_0.gguf",
-        "--gpu-layers", "33",
         "--log-level", "info"
       ],
       "env": {
@@ -129,8 +109,7 @@ Crie ou edite o arquivo `.cursor/mcp.json` no repositório em que estiver trabal
     "brain-tools": {
       "command": "/home/desktop/Documents/projects/brain_tools/target/release/brain-tools",
       "args": [
-        "--root-dir", ".",
-        "--model-path", "/home/desktop/Documents/projects/brain_tools/models/vllm-d3-edge-Q8_0.gguf"
+        "--root-dir", "."
       ]
     }
   }
@@ -147,8 +126,7 @@ No painel de configurações de MCP do plugin Cline:
     "brain-tools": {
       "command": "/home/desktop/Documents/projects/brain_tools/target/release/brain-tools",
       "args": [
-        "--root-dir", "${workspaceFolder}",
-        "--model-path", "/home/desktop/Documents/projects/brain_tools/models/vllm-d3-edge-Q8_0.gguf"
+        "--root-dir", "${workspaceFolder}"
       ],
       "disabled": false,
       "autoApprove": [
@@ -170,11 +148,8 @@ O binário aceita tanto flags de linha de comando quanto variáveis de ambiente:
 | Argumento CLI | Variável de Ambiente | Padrão | Descrição |
 |---|---|---|---|
 | `-r`, `--root-dir` | `BRAIN_ROOT_DIR` | `.` | Diretório raiz do repositório a indexar e observar. |
-| `-m`, `--model-path` | `BRAIN_MODEL_PATH` | *None* | Caminho para o modelo GGUF (`d3-edge`). Caso não fornecido, busca automaticamente em `models/vllm-d3-edge-Q8_0.gguf` antes de entrar em fallback. |
-| `--gpu-layers` | `BRAIN_GPU_LAYERS` | `33` | Quantidade de camadas offloaded para a GPU (CUDA/Vulkan/Metal). |
-| `-t`, `--threads` | `BRAIN_THREADS` | *Auto (CPUs)* | Número de threads para inferência CPU e escaneamento. |
+| `-t`, `--threads` | `BRAIN_THREADS` | *Auto (CPUs)* | Número de threads para escaneamento. |
 | `--log-level` | `RUST_LOG` | `info` | Nível de log emitido no `stderr` (`error`, `warn`, `info`, `debug`). |
-| `--default-min-confidence` | `BRAIN_MIN_CONFIDENCE` | `0.65` | Confiança mínima de aprovação semântica para o `brain_search`. |
 | `--default-max-results` | `BRAIN_MAX_RESULTS` | `5` | Quantidade máxima de recortes cirúrgicos retornados. |
 
 ---

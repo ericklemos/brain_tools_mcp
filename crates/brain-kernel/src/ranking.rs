@@ -39,6 +39,16 @@ impl LexicalRanker {
             }
         }
 
+        // Test scaffolding matches the same words as the production code it
+        // exercises, but it is rarely what a search for behavior wants. Unless
+        // the query asks for tests, demote snippets that look like tests.
+        let wants_tests = terms.iter().any(|term| {
+            term.contains("test")
+                || term.contains("teste")
+                || term.contains("fixture")
+                || term.contains("mock")
+        });
+
         let mut scored: Vec<ScoredSnippet> = snippets
             .into_iter()
             .map(|snippet| {
@@ -65,10 +75,13 @@ impl LexicalRanker {
                     }
                 }
 
-                ScoredSnippet {
-                    snippet,
-                    score: raw_score,
-                }
+                let score = if !wants_tests && looks_like_test(&snippet) {
+                    raw_score * 0.35
+                } else {
+                    raw_score
+                };
+
+                ScoredSnippet { snippet, score }
             })
             .collect();
 
@@ -90,4 +103,23 @@ impl LexicalRanker {
         scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         scored
     }
+}
+
+/// Test files and test-only helpers use the same vocabulary as the code they
+/// exercise, so lexical ranking alone tends to put them first.
+fn looks_like_test(snippet: &AstSnippet) -> bool {
+    let in_tests_dir = snippet
+        .file_path
+        .components()
+        .any(|component| component.as_os_str() == std::ffi::OsStr::new("tests"));
+    let path = snippet.file_path.to_string_lossy().to_lowercase();
+    if in_tests_dir || path.ends_with("_test.rs") || path.ends_with("_tests.rs") {
+        return true;
+    }
+
+    let code = &snippet.code;
+    code.contains("tempdir()")
+        || code.contains("#[test]")
+        || code.contains("#[tokio::test]")
+        || code.contains("#[async_std::test]")
 }

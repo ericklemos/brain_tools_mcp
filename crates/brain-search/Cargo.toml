@@ -1,13 +1,12 @@
 [package]
 name = "brain-search"
-description = "brain_search tool: lexical scanning, AST snippets, semantic validation"
+description = "brain_search tool: lexical scanning, AST snippets and ranking"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
 [dependencies]
 brain-kernel = { path = "../brain-kernel" }
-brain-engine = { path = "../brain-engine" }
 ignore = { workspace = true }
 blake3 = { workspace = true }
 grep-searcher = { workspace = true }

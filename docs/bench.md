@@ -58,23 +58,23 @@ Saída típica:
 
 ```
 tarefa                       brain     naïve    fator    tempo  resultado
-busca-orcamento              1.507     7.397     4,9x    17,7s  ok
-fluxo-busca-corpo            1.162    14.190    12,2x    21,6s  ok
-contexto-handle-diff           488     9.825    20,1x     0,0s  ok
+busca-orcamento              1.185     7.397     6,2x     0,0s  ok
+fluxo-busca-corpo            1.099    13.265    12,1x     0,0s  ok
+contexto-handle-diff           520     9.825    18,9x     0,0s  ok
 contexto-arquivo-inteiro       420     1.536     3,7x     0,0s  ok
-impacto-select               2.051    29.471    14,4x     0,0s  ok
+impacto-select               2.044    28.546    14,0x     0,0s  ok
 esqueleto-watcher              103       686     6,7x     0,0s  ok
 esqueleto-arquivo-grande     1.169     9.385     8,0x     0,0s  ok
 corpo-select                   309     2.388     7,7x     0,0s  ok
 mapa-grafo                   2.036    76.284    37,5x     0,0s  ok
-assert-omitted-body            189    11.099    58,7x     0,0s  ok
+assert-omitted-body            189    10.174    53,8x     0,0s  ok
 porque-build-graph             114     7.475    65,6x     0,0s  ok
 trace-handle-context           142     1.793    12,6x     0,0s  ok
 repeticao-mesmo-trecho         577     9.385    16,3x     0,0s  ok
-TOTAL                       10.267   180.914    17,6x    39,4s
+TOTAL                        9.907   178.139    18,0x     0,1s
 
-schema tools/list: 3.278 tokens em 16 ferramentas (pago a cada requisição, fora das tarefas)
-economia: 94,3% dos tokens que reler os arquivos declarados custaria
+schema tools/list: 3.210 tokens em 16 ferramentas (pago a cada requisição, fora das tarefas)
+economia: 94,4% dos tokens que reler os arquivos declarados custaria
 ```
 
 `fator` é `naïve / brain`: quantas vezes mais caro seria ler. Fator abaixo de
@@ -93,7 +93,7 @@ exatamente o tipo de caso que precisa aparecer no relatório.
 | `--max-growth` | `10.0` | Percentual aceito antes de acusar regressão. |
 | `--json` | — | Grava o relatório completo (com as chamadas) em JSON. |
 | `--timeout-secs` | `300` | Teto por chamada MCP. |
-| `--server-arg` | — | Repassa um argumento ao servidor, ex. `--model-path`. |
+| `--server-arg` | — | Repassa um argumento extra ao servidor. |
 | `--verbose` | — | Mostra o stderr do servidor. |
 
 Crescimento abaixo de 50 tokens não conta como regressão: a linha de
@@ -103,20 +103,6 @@ repositório.
 Códigos de saída: `0` tudo dentro do teto, `1` regressão ou falha de execução
 (serve como gate de CI, e é assim que `.github/workflows/build.yml` usa o
 harness).
-
-### Com e sem o modelo `d3-edge`
-
-Sem `--model-path` o `brain_search` roda no ranqueador léxico, e é esse custo
-que o baseline grava. Para medir o modo semântico:
-
-```bash
-cargo run -p brain-bench -- \
-  --server-arg=--model-path --server-arg=models/vllm-d3-edge-Q8_0.gguf \
-  --baseline bench/baseline-d3.json --update
-```
-
-Grave baselines separados por modo: um binário léxico nunca deve ser comparado
-com um baseline gerado com GPU.
 
 ## Adicionar uma tarefa
 

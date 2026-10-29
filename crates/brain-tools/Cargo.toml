@@ -9,18 +9,11 @@ authors.workspace = true
 name = "brain-tools"
 path = "src/main.rs"
 
-[features]
-default = []
-cuda = ["brain-engine/cuda"]
-vulkan = ["brain-engine/vulkan"]
-metal = ["brain-engine/metal"]
-
 [dependencies]
 brain-kernel = { path = "../brain-kernel" }
 brain-search = { path = "../brain-search" }
 brain-graph = { path = "../brain-graph" }
 brain-exec = { path = "../brain-exec" }
-brain-engine = { path = "../brain-engine" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 serde = { workspace = true }

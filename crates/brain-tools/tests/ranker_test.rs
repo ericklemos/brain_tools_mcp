@@ -49,3 +49,43 @@ fn test_ranker_prioritizes_symbol_name_over_comment_or_body() {
         assert!(item.score >= 0.0 && item.score <= 1.0);
     }
 }
+
+#[test]
+fn test_ranker_demotes_test_scaffolding_unless_the_query_asks_for_tests() {
+    let production = AstSnippet {
+        file_path: PathBuf::from("src/map.rs"),
+        symbol_name: "handle_budget".to_string(),
+        signature: "pub fn handle_budget()".to_string(),
+        code: "pub fn handle_budget() {\n    let handle = budget();\n}".to_string(),
+        start_line: 1,
+        end_line: 3,
+    };
+
+    let test = AstSnippet {
+        file_path: PathBuf::from("src/map_test.rs"),
+        symbol_name: "test_budget_handle".to_string(),
+        signature: "fn test_budget_handle()".to_string(),
+        code: "fn test_budget_handle() {\n    let dir = tempdir().unwrap();\n    let handle = budget();\n}"
+            .to_string(),
+        start_line: 10,
+        end_line: 14,
+    };
+
+    let ranker = LexicalRanker::new();
+    let ranked = ranker.rank(
+        "budget handle",
+        &["budget", "handle"],
+        vec![test.clone(), production.clone()],
+    );
+    assert_eq!(ranked[0].snippet.symbol_name, "handle_budget");
+
+    let ranked_for_tests = ranker.rank("budget handle test", &["budget", "handle", "test"], vec![
+        test,
+        production,
+    ]);
+    assert_eq!(
+        ranked_for_tests[0].snippet.symbol_name,
+        "test_budget_handle",
+        "a query that asks for tests must not demote them"
+    );
+}

@@ -11,9 +11,8 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
 1. **`brain_search` (Busca Cirúrgica AST-First):**
    - Varredura com `ignore` e `grep-searcher` respeitando `.gitignore` e ignorando `target/`, `build/`, `.gradle/`, `.git/`, `node_modules/`.
    - Expansão de nós sintáticos via **Tree-sitter** com suporte de primeira classe a **Rust** e **Kotlin**.
-   - **Validação Local Inteligente:** Usa modelo GGUF **d3-edge** (`vllm-d3-edge-Q8_0.gguf`) com scoring binário de logits ($1$ forward pass) e reaproveitamento de KV-cache de prefixo na GPU via CUDA.
+   - **Ranking lexical determinístico:** os blocos são ordenados por correspondência no nome do símbolo, na assinatura e no corpo; sem modelo, GPU ou download.
    - **Divulgação progressiva:** por padrão manda o corpo completo dos primeiros resultados e só a assinatura do resto (`detail: "auto"`); `full` e `signatures` forçam um comportamento para toda a busca.
-   - **Modo Fallback Automático:** Funciona perfeitamente mesmo sem modelo GGUF baixado, ranqueando blocos via densidade léxica/AST.
 
 2. **`brain_context_graph` (Ego-Grafo de Chamadas):**
    - Grafo direcionado em memória (`petgraph::stable_graph::StableDiGraph`).
@@ -105,56 +104,20 @@ O **`brain-tools`** conecta o seu agente (Claude Code, Cursor, Zed, JetBrains, C
 
 ---
 
-## 📦 Download do Modelo GGUF (`d3-edge`)
-
-O `brain-tools` é otimizado para o modelo de fundação para decisões **d3-edge** (0.7B da família vLLM Decision 3.0), pesando apenas ~806 MB e executando em milissegundos em GPUs como a RTX 5060:
-
-```bash
-# Executa o script automatizado de download (salva em models/vllm-d3-edge-Q8_0.gguf)
-./scripts/download_model.sh
-```
-
----
-
 ## 🛠️ Compilação e Execução
 
 ### Pré-requisitos
 - Rust (edição 2021 ou superior)
-- CMake e Clang
-- (Opcional para GPU) Driver NVIDIA + CUDA Toolkit
+- Toolchain C (para os build scripts do Tree-sitter)
 
-### Build padrão (com fallback CPU/heurístico)
+### Build
+
 ```bash
 cargo build --release
 ```
 
-### Build com aceleração CUDA (NVIDIA GPU)
-```bash
-cargo build --release --features cuda
-```
-
-O binário final estará em `target/release/brain-tools`.
-
-### GPU versus fallback
-
-O `--gpu-layers` só tem efeito quando o binário foi compilado com `--features cuda`
-(ou `vulkan`). Um build padrão ignora a flag e roda em CPU — funciona, mas a validação
-semântica fica bem mais lenta.
-
-### Modelos não-causais (atenção: `vllm-d3-edge`)
-
-O GGUF `d3-edge` declara `attention.causal = false`. Para modelos não-causais, o
-llama.cpp exige `n_ubatch >= n_tokens` a cada `decode` (`llama-context.cpp:1789`);
-quando o batch é menor, ele chama `GGML_ASSERT` e **aborta o processo com SIGABRT**
-no meio da chamada MCP. O cliente só vê `Connection closed`, sem causa aparente.
-
-Por isso o validador dimensiona `n_batch` e `n_ubatch` dinamicamente para o maior par
-prefixo+candidato (teto de `n_ctx`, piso de 512). Ao trocar de modelo ou de tamanho de
-snippet, os testes em `crates/brain-engine/src/llama_validator.rs` cobrem essa invariante:
-
-```bash
-cargo test --lib batch_capacity
-```
+O binário final estará em `target/release/brain-tools`. Não há dependência de CUDA,
+modelo GGUF ou download adicional: o ranking é lexical e determinístico.
 
 ---
 
@@ -178,9 +141,6 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 |---|---|---|
 | `--root-dir`, `-r` | `.` (cwd) | Diretório indexado e vigiado pelo watcher. **Relativo ao cwd do processo.** |
 | `--tools` | `full` | Conjunto exposto: `full` (16), `core` (10, ciclo de edição) ou `read` (9, revisão). Reduz o custo fixo do `tools/list`. |
-| `--model-path`, `-m` | — | Caminho do GGUF. Sem ele, opera em modo léxico/AST (fallback). |
-| `--gpu-layers` | `33` | Camadas offloaded para a GPU. |
-| `--default-min-confidence` | `0.65` | Limiar do modelo semântico. **Só se aplica com o GGUF carregado** — no modo léxico o score é ranking relativo e não há corte. |
 | `--default-max-results` | `5` | Máximo de recortes retornados. |
 | `--default-budget-tokens` | `2000` | Teto aproximado de tokens por resposta; o excedente vai para `brain_peek`. |
 | `--handle-ttl-secs` | `1800` | Tempo que uma resposta truncada continua recuperável. |
@@ -196,10 +156,10 @@ Para um passo a passo completo sobre como adicionar o servidor via **Claude Code
 | `--shell-usage-log-path` | `.brain/shell-usage.jsonl` | Caminho do log, relativo ao `--root-dir`. |
 | `--shell-usage-log-full` | `false` | Inclui o comando cru e os primeiros 200 chars de stdout/stderr; use com cuidado. |
 | `--log-level` | `info` | Filtro de log (sempre em `stderr`, nunca no stdout do protocolo). |
-| `--threads`, `-t` | — | Threads de CPU para busca e inferência. |
+| `--threads`, `-t` | — | Threads de CPU para busca. |
 
-Todas aceitam variável de ambiente equivalente (`BRAIN_ROOT_DIR`, `BRAIN_GPU_LAYERS`,
-`BRAIN_MIN_CONFIDENCE`, `BRAIN_MAX_RESULTS`, `BRAIN_BUDGET_TOKENS`, `BRAIN_TOOLS`, `RUST_LOG`).
+Todas aceitam variável de ambiente equivalente (`BRAIN_ROOT_DIR`, `BRAIN_MAX_RESULTS`,
+`BRAIN_BUDGET_TOKENS`, `BRAIN_TOOLS`, `RUST_LOG`).
 As opções do log de uso também têm variáveis próprias: `BRAIN_SHELL_USAGE_LOG`,
 `BRAIN_SHELL_USAGE_LOG_PATH` e `BRAIN_SHELL_USAGE_LOG_FULL`.
 Rode `brain-tools --help` para a lista exata do binário instalado.
@@ -207,13 +167,13 @@ Rode `brain-tools --help` para a lista exata do binário instalado.
 ### Perfis de ferramentas (`--tools`)
 
 O `tools/list` é pago a cada requisição em vários clientes. Expor 16 ferramentas custa
-**3.278 tokens**; um perfil corta isso sem esconder capacidades que a sessão não usa:
+**3.210 tokens**; um perfil corta isso sem esconder capacidades que a sessão não usa:
 
 | Perfil | Ferramentas | Schema |
 |---|---|---|
-| `full` (padrão) | todas as 16 | 3.278 tokens |
-| `core` | search, context_graph, impact_check, peek, exec, read, edit, write, patch, map | **2.142** (−35%) |
-| `read` | search, context_graph, impact_check, peek, read, map, assert, diff, why | **1.735** (−47%) |
+| `full` (padrão) | todas as 16 | 3.210 tokens |
+| `core` | search, context_graph, impact_check, peek, exec, read, edit, write, patch, map | **2.077** (−35%) |
+| `read` | search, context_graph, impact_check, peek, read, map, assert, diff, why | **1.670** (−48%) |
 
 Ferramenta fora do perfil responde `Unknown tool` em vez de ficar oculta: um perfil que
 ainda executa o que não lista não economiza o schema que prometeu. `brain_peek` está em
@@ -221,8 +181,7 @@ todos os perfis — truncamento sem recuperação não é economia, é perda.
 
 > ⚠️ **`--exec-timeout-secs` não é o timeout do MCP.** Ele limita só o processo filho do
 > `brain_exec` (300 s por padrão). O tempo que o **cliente** espera por uma resposta MCP
-> é outro controle, configurado do lado do cliente — veja
-> [Timeouts](#timeouts-quanto-esperar-do-d3-edge-e-como-não-ser-cortado).
+> é outro controle, configurado do lado do cliente — veja [Timeouts](#timeouts).
 
 ### Claude Code (`~/.claude.json`)
 
@@ -231,10 +190,7 @@ todos os perfis — truncamento sem recuperação não é economia, é perda.
   "mcpServers": {
     "brain-tools": {
       "command": "/caminho/absoluto/brain-tools/target/release/brain-tools",
-      "args": [
-        "--model-path", "/caminho/absoluto/brain-tools/models/vllm-d3-edge-Q8_0.gguf",
-        "--gpu-layers", "33"
-      ],
+      "args": [],
       "env": {
         "RUST_LOG": "info"
       }
@@ -255,26 +211,11 @@ por quê).
 > ao iniciar o watcher — o cliente reporta `Connection closed`.
 > Confirme sempre com `test -d /seu/caminho`.
 
-### Timeouts: quanto esperar do `d3-edge` e como não ser cortado
+### Timeouts
 
-O `d3-edge` é um modelo de decisão de 0.7B, **não** um gerador de texto: cada validação
-semântica é um forward pass de logits, não uma geração de tokens. O custo real medido
-nesta máquina (Q8_0, `--gpu-layers 33`, projeto de 932 arquivos / 138 mil linhas) é:
-
-| Etapa | Tempo medido |
-|---|---|
-| `initialize` (handshake, servidor frio) | 1,66 s |
-| `initialize` (servidor já carregado) | 0,82 s |
-| `tools/list` | 0,00 s |
-| `brain_search` (primeira chamada) | 0,12 s |
-| `brain_search` (segunda chamada) | 0,60 s |
-
-O carregamento do GGUF acontece numa **thread de fundo** (`crates/brain-engine/src/actor.rs`),
-então ele nunca bloqueia o handshake — o `initialize` responde antes de o modelo estar
-pronto. Por isso timeout de inicialização **não** é o problema típico deste servidor. O
-que pode estourar é uma chamada individual quando o `n_ubatch` é redimensionado para um
-snippet grande (ver [Modelos não-causais](#modelos-não-causais-atenção-vllm-d3-edge)) ou
-quando várias instâncias disputam a mesma GPU.
+O `brain-tools` não carrega modelo nem GPU: `initialize` responde em milissegundos,
+`tools/list` é estático e `brain_search` é léxico + AST. O que pode demorar é a
+indexação inicial do grafo em repositórios muito grandes, não uma resposta individual.
 
 **Nunca configure 10 minutos como teto global de chamada.** Os defaults do cliente são
 maiores que isso, e um `600000` fixo *reduziria* a margem em vez de aumentá-la. Valores
@@ -286,42 +227,13 @@ reais do Claude Code 2.1.x:
 | watchdog de silêncio em stdio | **30 min** | Por chamada: quanto tempo a ferramenta pode ficar sem emitir nada. |
 | campo `timeout` (ms) no servidor | herda o idle acima | Wall-clock **duro** por chamada; **substitui** o idle global. Valores < 1000 ms são ignorados. |
 
-Ou seja: o caminho certo é **não mexer** no idle (30 min já cobre com folga um forward
-pass de 1 s) e só subir `MCP_TIMEOUT` se o handshake falhar de fato. Para exigir um teto
-duro maior por chamada, use o campo `timeout` — em milissegundos — e mantenha-o **acima**
-de 30 min se a intenção for afrouxar, não apertar:
-
-```json
-{
-  "mcpServers": {
-    "brain-tools": {
-      "command": "/caminho/absoluto/brain-tools/target/release/brain-tools",
-      "args": [
-        "--model-path", "/caminho/absoluto/brain-tools/models/vllm-d3-edge-Q8_0.gguf",
-        "--gpu-layers", "33"
-      ],
-      "env": { "RUST_LOG": "info", "MCP_TIMEOUT": "300000" },
-      "timeout": 3600000
-    }
-  }
-}
-```
-
-`"timeout": 3600000` = 1 hora de teto duro por chamada. É seguro: um forward pass de 1 s
-nunca chega perto disso, e se a GPU travar o agente recebe um erro em vez de esperar
-para sempre. `MCP_TIMEOUT=300000` dá 5 min ao handshake — folga absurda para um
-`initialize` de 1,66 s, sem penalizar o usuário quando a máquina está carregada.
+Ou seja: **não mexa** no idle e só suba `MCP_TIMEOUT` se o handshake falhar de fato.
+Para um teto duro por chamada, use o campo `timeout` (ms) e mantenha-o acima de 30 min
+se a intenção for afrouxar.
 
 Para aumentar **todos** os servidores de uma vez, use as variáveis de ambiente globais em
 vez de editar cada registro: `MCP_TIMEOUT` (startup) e `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`
 (idle por chamada; `0` desativa).
-
-> ⚠️ **Timeout não é o gargalo deste modelo.** Se a busca estiver demorando segundos em
-> vez de milissegundos, o sintoma real é contenção de GPU: cada sessão do Claude Code
-> inicia **sua própria** instância do servidor, e cada uma carrega ~500 MB de modelo na
-> VRAM. Confira com `nvidia-smi --query-compute-apps=pid,used_memory --format=csv` e
-> `pgrep -cf "brain-tools --model-path"`. Aumentar timeout apenas transforma "corta
-> cedo" em "espera muito" — não devolve a VRAM.
 
 ### Cursor (`.cursor/mcp.json`)
 
@@ -330,7 +242,7 @@ vez de editar cada registro: `MCP_TIMEOUT` (startup) e `CLAUDE_CODE_MCP_TOOL_IDL
   "mcpServers": {
     "brain-tools": {
       "command": "/caminho/absoluto/brain-tools/target/release/brain-tools",
-      "args": ["--model-path", "/caminho/absoluto/brain-tools/models/vllm-d3-edge-Q8_0.gguf"]
+      "args": []
     }
   }
 }
@@ -379,40 +291,28 @@ Passo a passo do zero. Troque `/caminho/do/brain_tools` pelo caminho real da má
 ```bash
 git clone <repo> brain_tools && cd brain_tools
 
-# Ubuntu/Debian — tree-sitter e llama.cpp precisam de toolchain C:
-sudo apt install build-essential cmake clang libclang-dev   # libclang-dev: bindgen
+# Ubuntu/Debian — o Tree-sitter compila C nos build scripts:
+sudo apt install build-essential
 
-cargo build --release                 # CPU
-cargo build --release --features cuda # GPU NVIDIA
+cargo build --release
 ```
 
 O binário fica em `target/release/brain-tools`. **Refaça o build sempre que puxar
 código novo** — nenhum cliente avisa que está rodando um binário velho (sintoma típico:
 faltam ferramentas no `tools/list`).
 
-### 2. Modelo GGUF (opcional)
-
-```bash
-./scripts/download_model.sh    # ~806 MB em models/
-```
-
-Sem o modelo o servidor roda em modo léxico/AST — funciona, mas `--default-min-confidence`
-deixa de ter efeito.
-
-### 3. Registrar o MCP
+### 2. Registrar o MCP
 
 ```bash
 MCP_TIMEOUT=300000 claude mcp add brain-tools \
-  /caminho/do/brain_tools/target/release/brain-tools \
-  --model-path /caminho/do/brain_tools/models/vllm-d3-edge-Q8_0.gguf \
-  --gpu-layers 33
+  /caminho/do/brain_tools/target/release/brain-tools
 ```
 
 `MCP_TIMEOUT=300000` (5 min) é folga deliberada no handshake. O default é 30 s e o
-`initialize` real leva ~1,7 s, então isso é margem para máquina carregada — não uma
-necessidade. Se você forçar um teto duro por chamada, use o campo `timeout` (ms) no
+`initialize` real leva milissegundos, então isso é margem para máquina carregada — não
+uma necessidade. Se você forçar um teto duro por chamada, use o campo `timeout` (ms) no
 registro e **não** desça abaixo de 30 min, que é o default de silêncio em stdio. Detalhes
-em [Timeouts](#timeouts-quanto-esperar-do-d3-edge-e-como-não-ser-cortado).
+em [Timeouts](#timeouts).
 
 **Não passe `--root-dir`**: o Claude Code inicia o servidor com cwd igual ao diretório do
 projeto, e o padrão `.` passa a indexar o repositório em que você está aberto — um único
@@ -430,12 +330,12 @@ Devem aparecer `brain_search`, `brain_context_graph`, `brain_impact_check`, `bra
 não aparece com `--exec-disabled`; `brain_shell` com `--shell-disabled`). Se faltar alguma, o
 binário é antigo.
 
-### 4. Instrução — `~/.claude/CLAUDE.md`
+### 3. Instrução — `~/.claude/CLAUDE.md`
 
 Cole o bloco "brain-tools é a fonte de verdade" de [docs/hooks.md](docs/hooks.md).
 É ele que autoriza o agente a parar de verificar o que já recebeu.
 
-### 5. Hook anti-releitura — `~/.claude/settings.json`
+### 4. Hook anti-releitura — `~/.claude/settings.json`
 
 O hook é a única camada que **sobrepõe** o comportamento: o harness recusa a releitura
 em vez de apenas desaconselhá-la.
@@ -503,7 +403,7 @@ O hook **não** bloqueia a primeira leitura de um arquivo — é ela que habilit
 Ele bloqueia só a repetição de uma faixa já lida, com o arquivo inalterado desde então.
 Detalhes e tabela de casos em [docs/hooks.md](docs/hooks.md).
 
-### 6. Reiniciar e verificar
+### 5. Reiniciar e verificar
 
 `CLAUDE.md` e hooks são lidos na inicialização: **reinicie o Claude Code**.
 
@@ -529,8 +429,7 @@ Numa sessão nova, peça uma busca conceitual e confira a resposta:
 | Agente ainda relê | instrução ausente no `CLAUDE.md` e/ou hook não registrado |
 | Servidor `✗ Failed to connect` | handshake acima de `MCP_TIMEOUT` (30 s) — suba a variável |
 | Ferramentas do brain ausentes numa sessão só | sessão iniciada antes do servidor ser registrado; reinicie |
-| Busca leva segundos | contenção de GPU: várias sessões, uma instância do servidor cada |
-| Busca correta mas lenta na 1ª chamada | forward pass frio do `d3-edge`; ~1 s, não é erro |
+| Busca lenta em repositório enorme | indexação inicial do grafo; as buscas seguintes usam o índice em memória |
 
 ---
 
@@ -591,10 +490,9 @@ como um plugin registrado nele.
 crates/
   brain-kernel/   protocol (JSON-RPC), tipos AST, AstChunker, Config, Registry/ToolPlugin,
                   budget/Section, ResponseStore, brain_peek
-  brain-search/   scanner léxico + brain_search
+  brain-search/   scanner léxico + ranking + brain_search
   brain-graph/    grafo de código, watcher, brain_context_graph, brain_impact_check
   brain-exec/     runner do cargo, parsers (JSON e libtest), cache + brain_exec
-  brain-engine/   inferência GGUF (llama-cpp-2 isolado aqui)
   brain-tools/    binário, monta o Registry em main.rs e re-exporta os caminhos antigos
   brain-bench/    harness de economia de tokens (cliente MCP + baseline), fora do servidor
 ```
@@ -602,12 +500,6 @@ crates/
 Adicionar uma ferramenta é criar o tipo no crate dela e uma linha de `register` em
 `main.rs` — não há mais um `match` de nomes nem uma lista de schemas a editar.
 
-As features `cuda`, `vulkan` e `metal` propagam `brain-tools → brain-engine → llama-cpp-2`:
-
-```bash
-cargo build --release --features cuda   # build GPU
-```
-
 `brain-tools` mantém um módulo de compatibilidade (`crates/brain-tools/src/lib.rs`) que
-re-exporta `brain_tools::search`, `::graph`, `::engine` e `::mcp`, então código que usa a
+re-exporta `brain_tools::search`, `::graph`, `::exec` e `::mcp`, então código que usa a
 API antiga continua compilando.

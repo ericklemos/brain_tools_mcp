@@ -1,17 +1,16 @@
+use brain_exec::{ExecTool, ShellTool, ShellUsageLog};
 use brain_graph::assert_tool::AssertTool;
 use brain_graph::builder::GraphBuilder;
 use brain_graph::diff_tool::DiffTool;
 use brain_graph::edit_tool::EditTool;
-use brain_graph::patch_tool::PatchTool;
-use brain_graph::write_tool::WriteTool;
-use brain_graph::graph_tool::{GraphContextTool, GraphImpactTool, GraphHandler};
+use brain_graph::graph_tool::{GraphContextTool, GraphHandler, GraphImpactTool};
 use brain_graph::history_tool::HistoryTool;
 use brain_graph::map_tool::MapTool;
+use brain_graph::patch_tool::PatchTool;
 use brain_graph::read_tool::ReadTool;
 use brain_graph::trace_tool::TraceTool;
 use brain_graph::watcher::GraphWatcher;
-use brain_engine::ValidationClient;
-use brain_exec::{ExecTool, ShellTool, ShellUsageLog};
+use brain_graph::write_tool::WriteTool;
 use brain_kernel::deliveries::DeliveryLedger;
 use brain_kernel::ledger_tool::LedgerTool;
 use brain_kernel::peek_tool::PeekTool;
@@ -38,7 +37,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Direct all tracing/logging strictly to stderr
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level)))
+        .with(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level)),
+        )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
@@ -48,15 +49,6 @@ async fn main() -> anyhow::Result<()> {
         "Starting brain-tools MCP server daemon"
     );
 
-    let resolved_model = config.resolved_model_path();
-    if let Some(ref model_path) = resolved_model {
-        tracing::info!(model_path = %model_path.display(), "Using GGUF model for validation");
-    } else {
-        tracing::warn!("No GGUF model configured or found; operating in lexical/AST fallback mode");
-    }
-
-    let validator = ValidationClient::new(resolved_model, config.gpu_layers)
-        .with_max_candidates(config.max_validate_candidates);
     let store = Arc::new(ResponseStore::new(
         Duration::from_secs(config.handle_ttl_secs),
         config.handle_max_bytes,
@@ -87,14 +79,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let search_handler = Arc::new(
-        SearchHandler::new(
-            &config.root_dir,
-            validator,
-            config.default_max_results,
-            config.default_min_confidence,
-        )
-        .with_budget(store.clone(), config.default_budget_tokens)
-        .with_deliveries(deliveries.clone()),
+        SearchHandler::new(&config.root_dir, config.default_max_results)
+            .with_budget(store.clone(), config.default_budget_tokens)
+            .with_deliveries(deliveries.clone()),
     );
 
     // Initialize in-memory CodeGraph and Watcher

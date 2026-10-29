@@ -22,8 +22,6 @@ async fn truncated_search_is_recoverable_through_brain_peek() {
     }
 
     let bin_path = env!("CARGO_BIN_EXE_brain-tools");
-    // Run from the fixture dir: the daemon probes ./models for a GGUF and a
-    // loaded model changes which candidates survive, making the test flaky.
     let mut child = Command::new(bin_path)
         .current_dir(dir.path())
         .arg("--root-dir")
@@ -59,7 +57,6 @@ async fn truncated_search_is_recoverable_through_brain_peek() {
         serde_json::json!({
             "natural_query": "handler",
             "keywords": ["handler"],
-            "min_confidence": 0.0,
             "max_results": 10
         }),
     );
@@ -97,7 +94,11 @@ async fn truncated_search_is_recoverable_through_brain_peek() {
     reader.read_line(&mut line).await.unwrap();
     let resp: JsonRpcResponse = serde_json::from_str(line.trim()).expect("valid JSON-RPC");
     let peek_res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
-    assert_eq!(peek_res.is_error, None, "peek failed: {}", peek_res.content[0].text);
+    assert_eq!(
+        peek_res.is_error, None,
+        "peek failed: {}",
+        peek_res.content[0].text
+    );
 
     let peek_text = &peek_res.content[0].text;
     assert!(
@@ -110,7 +111,11 @@ async fn truncated_search_is_recoverable_through_brain_peek() {
     );
 
     // 3. An unknown handle is a categorical error, never an empty answer.
-    let bogus_req = call(3, "brain_peek", serde_json::json!({ "handle": "h_deadbeef" }));
+    let bogus_req = call(
+        3,
+        "brain_peek",
+        serde_json::json!({ "handle": "h_deadbeef" }),
+    );
     stdin.write_all(bogus_req.as_bytes()).await.unwrap();
     stdin.flush().await.unwrap();
 

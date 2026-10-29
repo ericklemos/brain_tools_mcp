@@ -21,11 +21,6 @@ pub fn brain_search_tool() -> Tool {
                     "default": 5,
                     "description": "Número máximo de recortes a retornar."
                 },
-                "min_confidence": {
-                    "type": "number",
-                    "default": 0.65,
-                    "description": "Limiar do modelo de validação semântica (0.0 a 1.0). Só se aplica com o GGUF carregado; no modo léxico o score é um ranking relativo, não uma probabilidade, e não há corte."
-                },
                 "budget_tokens": {
                     "type": "integer",
                     "description": "Teto de tokens (excedente em brain_peek)."

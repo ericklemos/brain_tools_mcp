@@ -1,4 +1,3 @@
-use brain_tools::engine::ValidationClient;
 use brain_tools::graph::builder::GraphBuilder;
 use brain_tools::mcp::handlers::{GraphHandler, SearchHandler};
 use brain_tools::mcp::protocol::*;
@@ -54,8 +53,7 @@ pub fn route_request(token: &str) -> bool {
         builder.build_graph(root).expect("Graph build failed"),
     ));
 
-    let validator = ValidationClient::new(None, 0);
-    let search_handler = Arc::new(SearchHandler::new(root, validator, 5, 0.5));
+    let search_handler = Arc::new(SearchHandler::new(root, 5));
     let graph_handler = Arc::new(GraphHandler::new(root, code_graph));
     let dispatcher = Arc::new(BrainToolDispatcher::new(search_handler, graph_handler));
     let server = McpServer::new(dispatcher);
@@ -93,8 +91,14 @@ pub fn route_request(token: &str) -> bool {
     let res: CallToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
     assert_eq!(res.is_error, None);
     let text = &res.content[0].text;
-    assert!(text.contains("verify_token"), "Expected verify_token in output: {text}");
-    assert!(text.contains("auth_guard"), "Expected caller auth_guard in output: {text}");
+    assert!(
+        text.contains("verify_token"),
+        "Expected verify_token in output: {text}"
+    );
+    assert!(
+        text.contains("auth_guard"),
+        "Expected caller auth_guard in output: {text}"
+    );
 
     // 3. Call brain_impact_check for verify_token
     let impact_req = JsonRpcRequest {
@@ -114,6 +118,12 @@ pub fn route_request(token: &str) -> bool {
     assert_eq!(res.is_error, None);
     let impact_text = &res.content[0].text;
     assert!(impact_text.contains("Relatório de Análise de Impacto: `verify_token`"));
-    assert!(impact_text.contains("auth_guard"), "Expected direct impact: {impact_text}");
-    assert!(impact_text.contains("route_request"), "Expected transitive impact: {impact_text}");
+    assert!(
+        impact_text.contains("auth_guard"),
+        "Expected direct impact: {impact_text}"
+    );
+    assert!(
+        impact_text.contains("route_request"),
+        "Expected transitive impact: {impact_text}"
+    );
 }

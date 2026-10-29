@@ -1,5 +1,4 @@
 /target
-/models/*.gguf
 **/*.tmp
 .idea
 .claude/worktrees/

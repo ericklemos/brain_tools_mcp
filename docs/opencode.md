@@ -59,11 +59,7 @@ atualização automática de todas as referências; isso se faz com patch/write.
       "brain-tools": {
         "type": "local",
         "command": [
-          "/caminho/absoluto/brain_tools/target/release/brain-tools",
-          "--model-path",
-          "/caminho/absoluto/brain_tools/models/vllm-d3-edge-Q8_0.gguf",
-          "--gpu-layers",
-          "33"
+          "/caminho/absoluto/brain_tools/target/release/brain-tools"
         ],
         "environment": { "RUST_LOG": "info" }
       }
