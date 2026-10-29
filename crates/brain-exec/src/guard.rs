@@ -5,6 +5,8 @@
 //! the name of that tool, so the fallback to `grep`/`sed`/`cat` stops being
 //! silent.
 
+use std::path::Path;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     Word(String),
@@ -222,6 +224,280 @@ fn is_fd_target(word: &str) -> bool {
     !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
 }
 
+/// A command refused by the guard: what matched and which tool replaces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blocked {
+    pub program: String,
+    pub replacement: &'static str,
+}
+
+/// Returns the first covered command in `command`, if any.
+pub fn check(command: &str) -> Option<Blocked> {
+    segments(command)
+        .into_iter()
+        .find_map(|segment| check_segment(&segment))
+}
+
+/// The refusal text handed back to the agent.
+pub fn message(blocked: &Blocked) -> String {
+    format!(
+        "### brain_shell — comando bloqueado\n\n\
+         `{program}` é substituído por `{replacement}`.\n\n\
+         Use `{replacement}` em vez do shell. Pesquisa e leitura de código são\n\
+         `brain_search`, `brain_read`, `brain_map`, `brain_context_graph` e\n\
+         `brain_impact_check`. `brain_shell` é só para git, formatador e ferramenta externa.",
+        program = blocked.program,
+        replacement = blocked.replacement,
+    )
+}
+
+fn check_segment(segment: &Segment) -> Option<Blocked> {
+    let mut words = segment.words.clone();
+
+    loop {
+        while words.first().is_some_and(|word| is_assignment(word)) {
+            words.remove(0);
+        }
+        let Some(first) = words.first() else {
+            break;
+        };
+        let program = basename(first);
+
+        if is_wrapper(&program) {
+            match program.as_str() {
+                "bash" | "sh" | "zsh" | "dash" | "ksh" => {
+                    return shell_script(&words).and_then(|script| check(&script));
+                }
+                "eval" => return check(&words[1..].join(" ")),
+                "busybox" => {
+                    words.remove(0);
+                    continue;
+                }
+                "xargs" => {
+                    words.remove(0);
+                    skip_options(&mut words, XARGS_VALUE_OPTIONS);
+                    if words.is_empty() {
+                        return None;
+                    }
+                    continue;
+                }
+                "command" => {
+                    if words.iter().skip(1).any(|w| w == "-v" || w == "-V") {
+                        return None;
+                    }
+                    strip_wrapper(&mut words, &[]);
+                }
+                "sudo" => strip_wrapper(&mut words, SUDO_VALUE_OPTIONS),
+                "env" => strip_wrapper(&mut words, ENV_VALUE_OPTIONS),
+                "time" => strip_wrapper(&mut words, TIME_VALUE_OPTIONS),
+                "nice" => strip_wrapper(&mut words, NICE_VALUE_OPTIONS),
+                "stdbuf" => strip_wrapper(&mut words, STDBUF_VALUE_OPTIONS),
+                "nohup" => strip_wrapper(&mut words, &[]),
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        if let Some(blocked) = classify(&program, &words) {
+            return Some(blocked);
+        }
+        break;
+    }
+
+    for write in &segment.writes {
+        if is_ignored_target(&write.target) {
+            continue;
+        }
+        let op = if write.append { ">>" } else { ">" };
+        return Some(Blocked {
+            program: format!("{op} {}", write.target),
+            replacement: "brain_write",
+        });
+    }
+
+    None
+}
+
+fn classify(program: &str, words: &[String]) -> Option<Blocked> {
+    let (replacement, label) = match program {
+        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "ugrep" => ("brain_search", program),
+        "cat" | "bat" | "less" | "more" | "most" | "head" | "tail" | "nl" | "tac" | "strings"
+        | "xxd" | "od" | "hexdump" => ("brain_read", program),
+        "awk" | "gawk" | "mawk" | "cut" => ("brain_read", program),
+        "sed" => {
+            let edit = words.iter().skip(1).any(|w| w.starts_with("-i"));
+            (if edit { "brain_edit" } else { "brain_read" }, program)
+        }
+        "find" | "fd" | "fdfind" | "locate" | "tree" | "ls" | "dir" | "vdir" => {
+            ("brain_map", program)
+        }
+        "tee" | "dd" | "truncate" => ("brain_write", program),
+        "patch" => ("brain_patch", program),
+        "git" => return git_target(words),
+        "cargo" => return cargo_target(words),
+        _ => return None,
+    };
+    Some(Blocked {
+        program: label.to_string(),
+        replacement,
+    })
+}
+
+fn git_target(words: &[String]) -> Option<Blocked> {
+    let mut index = 1;
+    while index < words.len() {
+        let word = &words[index];
+        if word == "-C" || word == "-c" {
+            index += 2;
+            continue;
+        }
+        if word.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+
+    let subcommand = words.get(index)?;
+    let (replacement, label) = match subcommand.as_str() {
+        "grep" => ("brain_search", "git grep"),
+        "diff" => ("brain_diff", "git diff"),
+        "show" => ("brain_diff", "git show"),
+        "blame" => ("brain_why", "git blame"),
+        "apply" => ("brain_patch", "git apply"),
+        "log" if words[index + 1..].iter().any(|w| w.starts_with("-L")) => {
+            ("brain_why", "git log -L")
+        }
+        _ => return None,
+    };
+    Some(Blocked {
+        program: label.to_string(),
+        replacement,
+    })
+}
+
+fn cargo_target(words: &[String]) -> Option<Blocked> {
+    let mut index = 1;
+    while index < words.len() {
+        let word = &words[index];
+        if word.starts_with('+') || word.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+
+    let subcommand = words.get(index)?;
+    if matches!(subcommand.as_str(), "build" | "check" | "test" | "clippy") {
+        Some(Blocked {
+            program: format!("cargo {subcommand}"),
+            replacement: "brain_exec",
+        })
+    } else {
+        None
+    }
+}
+
+const SUDO_VALUE_OPTIONS: &[&str] = &["-u", "-g", "-C", "-p", "-h", "-r", "-t", "-U", "-T"];
+const ENV_VALUE_OPTIONS: &[&str] = &["-u", "-C", "-S", "--unset", "--chdir"];
+const TIME_VALUE_OPTIONS: &[&str] = &["-f", "-o", "--format", "--output"];
+const NICE_VALUE_OPTIONS: &[&str] = &["-n", "--adjustment"];
+const STDBUF_VALUE_OPTIONS: &[&str] = &[
+    "-i", "-o", "-e", "--input", "--output", "--error",
+];
+const XARGS_VALUE_OPTIONS: &[&str] = &[
+    "-n",
+    "-P",
+    "-I",
+    "-L",
+    "-s",
+    "-E",
+    "-d",
+    "--max-args",
+    "--max-procs",
+    "--replace",
+    "--delimiter",
+];
+
+fn is_wrapper(program: &str) -> bool {
+    matches!(
+        program,
+        "sudo"
+            | "env"
+            | "time"
+            | "command"
+            | "nohup"
+            | "nice"
+            | "stdbuf"
+            | "busybox"
+            | "bash"
+            | "sh"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "eval"
+            | "xargs"
+    )
+}
+
+fn strip_wrapper(words: &mut Vec<String>, value_options: &[&str]) {
+    words.remove(0);
+    skip_options(words, value_options);
+}
+
+fn skip_options(words: &mut Vec<String>, value_options: &[&str]) {
+    while let Some(word) = words.first() {
+        if word == "--" {
+            words.remove(0);
+            break;
+        }
+        if !word.starts_with('-') {
+            break;
+        }
+        let takes_value = value_options.contains(&word.as_str());
+        words.remove(0);
+        if takes_value && !words.is_empty() {
+            words.remove(0);
+        }
+    }
+}
+
+fn shell_script(words: &[String]) -> Option<String> {
+    let args = &words[1..];
+    let mut index = 0;
+    while index < args.len() {
+        let word = &args[index];
+        if word.starts_with('-') && !word.starts_with("--") && word.contains('c') {
+            return args.get(index + 1).cloned();
+        }
+        index += 1;
+    }
+    None
+}
+
+fn basename(word: &str) -> String {
+    Path::new(word)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(word)
+        .to_string()
+}
+
+fn is_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.contains('/')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_ignored_target(target: &str) -> bool {
+    matches!(target, "/dev/null" | "/dev/stdout" | "/dev/stderr") || is_fd_target(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +551,105 @@ mod tests {
             tokenize(r"echo a\ b"),
             vec![Token::Word("echo".into()), Token::Word("a b".into())]
         );
+    }
+
+    fn blocked(command: &str) -> Option<(String, &'static str)> {
+        check(command).map(|b| (b.program, b.replacement))
+    }
+
+    #[test]
+    fn blocks_search_programs_anywhere_in_the_pipeline() {
+        assert_eq!(
+            blocked("git log | grep fix"),
+            Some(("grep".into(), "brain_search"))
+        );
+        assert_eq!(blocked("rg TODO src"), Some(("rg".into(), "brain_search")));
+        assert_eq!(
+            blocked("sed -n '1,20p' src/lib.rs"),
+            Some(("sed".into(), "brain_read"))
+        );
+        assert_eq!(
+            blocked("sed -i 's/a/b/' src/lib.rs"),
+            Some(("sed".into(), "brain_edit"))
+        );
+        assert_eq!(
+            blocked("find . -name '*.rs'"),
+            Some(("find".into(), "brain_map"))
+        );
+    }
+
+    #[test]
+    fn unwraps_wrappers_and_nested_shells() {
+        assert_eq!(
+            blocked("sudo env FOO=1 bash -c 'rg token'"),
+            Some(("rg".into(), "brain_search"))
+        );
+        assert_eq!(
+            blocked("printf x | xargs grep foo"),
+            Some(("grep".into(), "brain_search"))
+        );
+        assert_eq!(
+            blocked("eval \"cat Cargo.toml\""),
+            Some(("cat".into(), "brain_read"))
+        );
+        assert_eq!(
+            blocked("/usr/bin/grep needle Cargo.toml"),
+            Some(("grep".into(), "brain_search"))
+        );
+        assert_eq!(
+            blocked("\"grep\" needle Cargo.toml"),
+            Some(("grep".into(), "brain_search"))
+        );
+    }
+
+    #[test]
+    fn reads_git_and_cargo_subcommands_past_global_options() {
+        assert_eq!(
+            blocked("git -C sub diff --stat"),
+            Some(("git diff".into(), "brain_diff"))
+        );
+        assert_eq!(
+            blocked("git log -L 1,20:src/a.rs"),
+            Some(("git log -L".into(), "brain_why"))
+        );
+        assert_eq!(
+            blocked("cargo +nightly test --all"),
+            Some(("cargo test".into(), "brain_exec"))
+        );
+        assert_eq!(
+            blocked("cargo clippy -- -D warnings"),
+            Some(("cargo clippy".into(), "brain_exec"))
+        );
+    }
+
+    #[test]
+    fn blocks_file_writes_but_not_fd_duplication_or_dev_null() {
+        assert_eq!(
+            blocked("echo hi > out.txt"),
+            Some(("> out.txt".into(), "brain_write"))
+        );
+        assert_eq!(
+            blocked("echo hi >> out.txt"),
+            Some((">> out.txt".into(), "brain_write"))
+        );
+        assert_eq!(blocked("echo hi 2>&1 > /dev/null"), None);
+    }
+
+    #[test]
+    fn leaves_uncovered_commands_alone() {
+        assert_eq!(blocked("git status"), None);
+        assert_eq!(blocked("git commit -m 'x'"), None);
+        assert_eq!(blocked("cargo fmt"), None);
+        assert_eq!(blocked("mkdir -p tmp"), None);
+        assert_eq!(blocked("make build"), None);
+        assert_eq!(blocked("echo hello"), None);
+    }
+
+    #[test]
+    fn the_message_names_the_program_and_the_replacement() {
+        let text = message(&check("grep x").unwrap());
+        assert!(text.contains("`grep`"));
+        assert!(text.contains("brain_search"));
+        assert!(text.contains("brain_shell"));
     }
 }
