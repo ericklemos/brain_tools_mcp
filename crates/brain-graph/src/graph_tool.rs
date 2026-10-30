@@ -17,6 +17,7 @@ pub struct GraphHandler {
     graph: Arc<tokio::sync::RwLock<ProjectCodeGraph>>,
     store: Option<Arc<ResponseStore>>,
     default_budget_tokens: usize,
+    state: Option<Arc<brain_kernel::state::StateStore>>,
 }
 
 impl GraphHandler {
@@ -29,6 +30,7 @@ impl GraphHandler {
             graph,
             store: None,
             default_budget_tokens: 2000,
+            state: None,
         }
     }
 
@@ -39,6 +41,11 @@ impl GraphHandler {
     pub fn with_budget(mut self, store: Arc<ResponseStore>, default_budget_tokens: usize) -> Self {
         self.store = Some(store);
         self.default_budget_tokens = default_budget_tokens;
+        self
+    }
+
+    pub fn with_state(mut self, state: Option<Arc<brain_kernel::state::StateStore>>) -> Self {
+        self.state = state;
         self
     }
 
@@ -90,7 +97,7 @@ impl GraphHandler {
         };
 
         let lock = self.graph.read().await;
-        let sections = GraphTraversal::impact_sections_with_options(
+        let mut sections = GraphTraversal::impact_sections_with_options(
             &lock,
             &params.symbol_name,
             &self.root_dir,
@@ -101,6 +108,16 @@ impl GraphHandler {
                 "Símbolo `{}` não encontrado no índice do projeto.",
                 params.symbol_name
             ));
+        }
+        if let Some(state) = &self.state {
+            if let Some(section) = state.notes_section(
+                &[],
+                &[params.symbol_name.as_str()],
+                "Memória sobre este símbolo",
+                6,
+            ) {
+                sections.push(section);
+            }
         }
         CallToolResult::text(self.render(sections, params.budget_tokens))
     }

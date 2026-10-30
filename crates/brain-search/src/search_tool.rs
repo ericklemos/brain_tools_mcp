@@ -61,6 +61,7 @@ pub struct SearchHandler {
     store: Option<Arc<ResponseStore>>,
     default_budget_tokens: usize,
     ledger: Option<Arc<DeliveryLedger>>,
+    state: Option<Arc<brain_kernel::state::StateStore>>,
 }
 
 /// A result section plus what to tell the ledger once it is decided whether
@@ -122,6 +123,7 @@ impl SearchHandler {
             store: None,
             default_budget_tokens: 2000,
             ledger: None,
+            state: None,
         }
     }
 
@@ -285,11 +287,14 @@ impl SearchHandler {
         }
 
         let approved_total = outcome.scored.len();
-        let scored: Vec<_> = outcome
+        let mut scored: Vec<_> = outcome
             .scored
             .into_iter()
-            .take(max_results.max(1))
+            .take(max_results.max(1).saturating_mul(2).min(approved_total))
             .collect();
+
+        self.boost_with_working_set(&mut scored);
+        scored.truncate(max_results.max(1));
 
         // What the response can honestly promise the agent: every section is the
         // verbatim body of its symbol, and whether anything was left out — and
@@ -594,6 +599,37 @@ fn completeness_line(
     }
 
     line
+}
+
+impl SearchHandler {
+    pub fn with_state(mut self, state: Option<Arc<brain_kernel::state::StateStore>>) -> Self {
+        self.state = state;
+        self
+    }
+
+    fn boost_with_working_set(&self, ranked: &mut [brain_kernel::ranking::ScoredSnippet]) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let hot = state.hot_paths(16);
+        if hot.is_empty() {
+            return;
+        }
+        for item in ranked.iter_mut() {
+            let relative = item
+                .snippet
+                .file_path
+                .strip_prefix(&self.root_dir)
+                .unwrap_or(&item.snippet.file_path)
+                .to_string_lossy()
+                .trim_start_matches("./")
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            if let Some(weight) = hot.get(&relative) {
+                item.score = (item.score + 0.10 + 0.05 * weight).min(1.0);
+            }
+        }
+        ranked.sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
 }
 
 impl ToolPlugin for SearchHandler {
@@ -1007,5 +1043,42 @@ mod tests {
             !text.contains("let v119"),
             "the search cap must not pretend to be the full body: {text}"
         );
+    }
+
+    #[test]
+    fn the_working_set_breaks_a_lexical_tie() {
+        let dir = tempdir().unwrap();
+        let state = Arc::new(brain_kernel::state::StateStore::open(dir.path()));
+        state.record_tool(brain_kernel::state::ToolRecord {
+            tool: "brain_read",
+            target: Some("src/b.rs"),
+            path: Some("src/b.rs"),
+            symbol: None,
+            ok: true,
+            ms: 1,
+            bytes: 0,
+        });
+        let handler = SearchHandler::new(dir.path(), ValidationClient::new(), 5, 0.0)
+            .with_state(Some(state));
+        let snippet = |path: &str, symbol: &str| brain_kernel::ast::AstSnippet {
+            file_path: dir.path().join(path),
+            symbol_name: symbol.to_string(),
+            signature: String::new(),
+            code: String::new(),
+            start_line: 1,
+            end_line: 1,
+        };
+        let mut ranked = vec![
+            brain_kernel::ranking::ScoredSnippet {
+                snippet: snippet("src/a.rs", "alpha"),
+                score: 0.9,
+            },
+            brain_kernel::ranking::ScoredSnippet {
+                snippet: snippet("src/b.rs", "beta"),
+                score: 0.9,
+            },
+        ];
+        handler.boost_with_working_set(&mut ranked);
+        assert_eq!(ranked[0].snippet.symbol_name, "beta");
     }
 }

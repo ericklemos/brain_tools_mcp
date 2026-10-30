@@ -94,3 +94,8 @@ fn the_shell_guard_is_on_by_default() {
 fn the_shell_guard_can_be_turned_off() {
     assert!(!Config::parse_from(["brain-tools", "--shell-guard", "false"]).shell_guard);
 }
+
+#[test]
+fn the_state_can_be_turned_off() {
+    assert!(!Config::parse_from(["brain-tools", "--state", "false"]).state);
+}

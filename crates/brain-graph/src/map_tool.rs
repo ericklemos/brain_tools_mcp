@@ -22,6 +22,7 @@ pub struct MapTool {
     graph: Arc<RwLock<ProjectCodeGraph>>,
     store: Arc<ResponseStore>,
     default_budget_tokens: usize,
+    state: Option<Arc<brain_kernel::state::StateStore>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
@@ -55,6 +56,7 @@ impl MapTool {
             graph,
             store,
             default_budget_tokens,
+            state: None,
         }
     }
 
@@ -181,9 +183,15 @@ impl MapTool {
                 .map(|&idx| graph.graph.edges_directed(idx, Direction::Incoming).count())
                 .sum()
         };
+        let hot = self
+            .state
+            .as_ref()
+            .map(|state| state.hot_paths(16))
+            .unwrap_or_default();
+        let boost = |path: &str| if hot.contains_key(path) { 2.0 } else { 0.0 };
         files.sort_by(|(path_a, nodes_a), (path_b, nodes_b)| {
-            score(nodes_b)
-                .cmp(&score(nodes_a))
+            (score(nodes_b) as f32 + boost(path_b))
+                .total_cmp(&(score(nodes_a) as f32 + boost(path_a)))
                 .then_with(|| path_a.cmp(path_b))
         });
 
@@ -307,6 +315,13 @@ impl MapTool {
         }
 
         sections
+    }
+}
+
+impl MapTool {
+    pub fn with_state(mut self, state: Option<Arc<brain_kernel::state::StateStore>>) -> Self {
+        self.state = state;
+        self
     }
 }
 

@@ -23,6 +23,7 @@ pub struct DiffTool {
     graph: Arc<RwLock<ProjectCodeGraph>>,
     store: Arc<ResponseStore>,
     default_budget_tokens: usize,
+    state: Option<Arc<brain_kernel::state::StateStore>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +121,7 @@ impl DiffTool {
             graph,
             store,
             default_budget_tokens,
+            state: None,
         }
     }
 
@@ -271,6 +273,22 @@ impl DiffTool {
             });
         }
 
+        if let Some(state) = &self.state {
+            let changed_paths: Vec<&str> =
+                changed.iter().map(|file| file.path.as_str()).collect();
+            let changed_names: Vec<&str> = changed_symbols
+                .iter()
+                .filter_map(|&idx| graph.graph.node_weight(idx).map(|node| node.name.as_str()))
+                .collect();
+            if let Some(section) = state.notes_section(
+                &changed_paths,
+                &changed_names,
+                "Memória sobre estas mudanças",
+                8,
+            ) {
+                sections.push(section);
+            }
+        }
         if !missing_files.is_empty() {
             sections.push(Section {
                 heading: "### Arquivos alterados sem símbolos indexados".to_string(),
@@ -404,6 +422,13 @@ pub(crate) fn is_test(node: &SymbolNode) -> bool {
         || path.ends_with("_tests.rs")
         || path.ends_with(".test.kt");
     in_test_tree || test_file || node.name.starts_with("test_") || node.name == "test"
+}
+
+impl DiffTool {
+    pub fn with_state(mut self, state: Option<Arc<brain_kernel::state::StateStore>>) -> Self {
+        self.state = state;
+        self
+    }
 }
 
 impl ToolPlugin for DiffTool {

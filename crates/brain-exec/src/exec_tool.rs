@@ -59,7 +59,7 @@ impl ExecTool {
         Self {
             runner: Runner::new(&root, timeout),
             store,
-            cache: BuildCache::new(),
+            cache: BuildCache::new().with_path(root.join(".brain").join("cache").join("exec.json")),
             default_budget_tokens,
             gate: tokio::sync::Mutex::new(()),
             sources: None,

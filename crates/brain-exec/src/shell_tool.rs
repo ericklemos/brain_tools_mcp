@@ -345,6 +345,7 @@ mod tests {
             2000,
             Duration::from_secs(5),
         )
+        .with_guard(false)
     }
 
     #[tokio::test]
@@ -396,6 +397,7 @@ mod tests {
             2000,
             Duration::from_secs(5),
         )
+        .with_guard(false)
         .with_usage_log(Some(log.clone()));
 
         let out = tool
@@ -427,6 +429,7 @@ mod tests {
             2000,
             Duration::from_secs(5),
         )
+        .with_guard(false)
         .with_usage_log(Some(log.clone()));
 
         let out = tool

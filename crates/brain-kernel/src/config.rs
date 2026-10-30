@@ -23,13 +23,17 @@ impl ToolProfile {
                 "brain_peek",
                 "brain_exec",
                 "brain_read",
+                "brain_read_many",
                 "brain_edit",
                 "brain_write",
+                "brain_write_many",
+                "brain_move",
                 "brain_patch",
                 "brain_map",
                 "brain_research",
                 "brain_websearch",
                 "brain_fetch",
+                "brain_state",
             ]),
             Self::Read => Some(&[
                 "brain_search",
@@ -37,6 +41,7 @@ impl ToolProfile {
                 "brain_impact_check",
                 "brain_peek",
                 "brain_read",
+                "brain_read_many",
                 "brain_map",
                 "brain_assert",
                 "brain_diff",
@@ -44,6 +49,7 @@ impl ToolProfile {
                 "brain_research",
                 "brain_websearch",
                 "brain_fetch",
+                "brain_state",
             ]),
         }
     }
@@ -118,6 +124,15 @@ pub struct Config {
     /// Bytes of delivered text the ledger may keep for pointers and diffs
     #[arg(long, env = "BRAIN_DELIVERY_MAX_BYTES", default_value_t = 8_388_608)]
     pub delivery_max_bytes: usize,
+
+    /// Keep a local session trail under `.brain/state` (events, notes, tasks)
+    #[arg(
+        long,
+        env = "BRAIN_STATE",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    pub state: bool,
 
     /// Kill a brain_exec run after this many seconds and return what it captured
     #[arg(long, env = "BRAIN_EXEC_TIMEOUT_SECS", default_value_t = 300)]

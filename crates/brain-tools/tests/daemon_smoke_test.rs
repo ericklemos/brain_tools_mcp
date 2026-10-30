@@ -80,8 +80,11 @@ async fn test_daemon_smoke_stdio_purity() {
             "brain_exec",
             "brain_shell",
             "brain_read",
+            "brain_read_many",
             "brain_edit",
             "brain_write",
+            "brain_write_many",
+            "brain_move",
             "brain_patch",
             "brain_map",
             "brain_assert",
@@ -89,6 +92,8 @@ async fn test_daemon_smoke_stdio_purity() {
             "brain_why",
             "brain_ledger",
             "brain_trace",
+            "brain_state",
+            "brain_setup",
         ]
     );
 
@@ -159,10 +164,12 @@ async fn a_tool_profile_removes_unlisted_tools_instead_of_hiding_them() {
             "brain_impact_check",
             "brain_peek",
             "brain_read",
+            "brain_read_many",
             "brain_map",
             "brain_assert",
             "brain_diff",
             "brain_why",
+            "brain_state",
         ]
     );
 

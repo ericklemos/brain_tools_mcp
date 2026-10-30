@@ -147,7 +147,7 @@ impl WriteTool {
     }
 }
 
-fn count_lines(content: &str) -> usize {
+pub(crate) fn count_lines(content: &str) -> usize {
     if content.is_empty() {
         0
     } else {
@@ -218,7 +218,7 @@ impl ToolPlugin for WriteTool {
 
 /// Resolves a target that may not exist yet, without allowing `..` or a symlink
 /// to escape the root.
-fn resolve_for_write(
+pub(crate) fn resolve_for_write(
     root_dir: &Path,
     requested: &str,
 ) -> std::result::Result<(PathBuf, bool), String> {

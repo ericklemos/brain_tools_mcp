@@ -57,6 +57,13 @@ async fn main() -> anyhow::Result<()> {
         config.handle_max_bytes,
     ));
 
+    // Local working memory: one append-only trail per session, under
+    // `.brain/state`. It is independent of the delivery ledger: this one is
+    // meant to survive the process.
+    let state = config
+        .state
+        .then(|| Arc::new(brain_kernel::state::StateStore::open(&config.root_dir)));
+
     // brain_fetch and brain_websearch read the web the way brain_read reads
     // code: bounded blocks, a shared handle store, and no second download for
     // the same URL. They are created here because they borrow this process's
@@ -141,7 +148,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_budget(store.clone(), config.default_budget_tokens)
         .with_deliveries(deliveries.clone())
-        .with_parse_cache(parse_cache.clone()),
+        .with_parse_cache(parse_cache.clone())
+        .with_state(state.clone()),
     );
 
     // Initialize in-memory CodeGraph and Watcher
@@ -156,11 +164,15 @@ async fn main() -> anyhow::Result<()> {
 
     let graph_handler = Arc::new(
         GraphHandler::new(&config.root_dir, code_graph.clone())
-            .with_budget(store.clone(), config.default_budget_tokens),
+            .with_budget(store.clone(), config.default_budget_tokens)
+            .with_state(state.clone()),
     );
 
     // Tools are plugins: adding one is a new crate type plus one register call.
     let mut registry = Registry::new();
+    if let Some(ref state) = state {
+        registry = registry.with_state(state.clone());
+    }
     registry
         .register(search_handler)
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -211,15 +223,21 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Orientation and history tools: they read the same watch-maintained graph.
+    let read_tool = Arc::new(
+        ReadTool::new(
+            &config.root_dir,
+            store.clone(),
+            config.default_budget_tokens,
+        )
+        .with_deliveries(deliveries.clone()),
+    );
     registry
-        .register(Arc::new(
-            ReadTool::new(
-                &config.root_dir,
-                store.clone(),
-                config.default_budget_tokens,
-            )
-            .with_deliveries(deliveries.clone()),
-        ))
+        .register(read_tool.clone())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(brain_graph::read_many_tool::ReadManyTool::new(
+            read_tool,
+        )))
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
         .register(Arc::new(EditTool::new(
@@ -233,6 +251,17 @@ async fn main() -> anyhow::Result<()> {
         .register(Arc::new(WriteTool::new(&config.root_dir)))
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
+        .register(Arc::new(brain_graph::write_many_tool::WriteManyTool::new(
+            &config.root_dir,
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
+        .register(Arc::new(brain_graph::move_tool::MoveTool::new(
+            &config.root_dir,
+            code_graph.clone(),
+        )))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    registry
         .register(Arc::new(PatchTool::new(&config.root_dir)))
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
@@ -241,7 +270,7 @@ async fn main() -> anyhow::Result<()> {
             code_graph.clone(),
             store.clone(),
             config.default_budget_tokens,
-        )))
+        ).with_state(state.clone())))
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
         .register(Arc::new(AssertTool::new(
@@ -257,7 +286,7 @@ async fn main() -> anyhow::Result<()> {
             code_graph.clone(),
             store.clone(),
             config.default_budget_tokens,
-        )))
+        ).with_state(state.clone())))
         .map_err(|e| anyhow::anyhow!(e))?;
     registry
         .register(Arc::new(HistoryTool::new(
@@ -283,6 +312,15 @@ async fn main() -> anyhow::Result<()> {
         )))
         .map_err(|e| anyhow::anyhow!(e))?;
 
+    if let Some(ref state) = state {
+        registry
+            .register(Arc::new(brain_kernel::state_tool::StateTool::new(
+                state.clone(),
+                config.default_budget_tokens,
+            )))
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+
     // Schema tokens are paid on every request: a profile is the difference
     // between exposing 16 tools and exposing the 9 the session can use.
     if let Some(allowed) = config.tool_profile.tools() {
@@ -292,6 +330,18 @@ async fn main() -> anyhow::Result<()> {
             tools = allowed.len(),
             "Tool profile applied"
         );
+    } else {
+        // The setup tool documents the other tools, so it reads the registry
+        // after the profile is applied: what it teaches is what this session
+        // answers. It stays out of trimmed profiles — a read-only session
+        // should not write into the project.
+        let documented = brain_kernel::plugin::ToolDispatcher::list_tools(&registry);
+        registry
+            .register(Arc::new(brain_kernel::setup_tool::SetupTool::new(
+                &config.root_dir,
+                documented,
+            )))
+            .map_err(|e| anyhow::anyhow!(e))?;
     }
 
     let server = McpServer::new(Arc::new(registry));
@@ -300,6 +350,10 @@ async fn main() -> anyhow::Result<()> {
     let stdout = tokio::io::stdout();
 
     server.run_loop(stdin, stdout).await?;
+
+    if let Some(ref state) = state {
+        state.finish();
+    }
 
     Ok(())
 }

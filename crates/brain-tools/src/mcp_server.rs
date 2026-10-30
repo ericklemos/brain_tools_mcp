@@ -116,6 +116,15 @@ async fn dispatch_request(
 
     match method {
         "initialize" => {
+            // The profile is already applied to the registry, so the guidance
+            // names what this session can actually call.
+            let tools = dispatcher.list_tools();
+            let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+            let mut instructions = brain_kernel::instructions::build(&names);
+            if let Some(extra) = dispatcher.instructions() {
+                instructions.push_str("\n\n");
+                instructions.push_str(&extra);
+            }
             let result = InitializeResult {
                 protocol_version: "2024-11-05".to_string(),
                 capabilities: ServerCapabilities {
@@ -127,10 +136,7 @@ async fn dispatch_request(
                     name: "brain-tools".to_string(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 },
-                instructions: Some(
-                    "brain-tools é a fonte de verdade do código: trate o resultado de brain_search, brain_context_graph e brain_impact_check como já lido e não reabra o mesmo trecho com Read. Para editar um símbolo use brain_edit com o hash de brain_read; arquivo inteiro use brain_write; diff use brain_patch. Saída truncada traz um handle para brain_peek. Se uma chamada falhar, diga isso explicitamente; não caia em grep/sed silencioso. Em sessões só de leitura, --tools read corta o custo fixo do tools/list."
-                        .to_string(),
-                ),
+                instructions: Some(instructions),
             };
             Some(JsonRpcResponse::success(
                 id,

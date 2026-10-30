@@ -46,6 +46,10 @@ pub trait ToolDispatcher: Send + Sync {
         name: &str,
         arguments: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = CallToolResult> + Send + '_>>;
+    /// Extra text appended to the MCP initialize instructions.
+    fn instructions(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A dispatcher with no tools, for protocol-level tests.
@@ -89,9 +93,15 @@ static PREINSTALLED: std::sync::Mutex<Vec<Arc<dyn ToolPlugin>>> = std::sync::Mut
 pub struct Registry {
     plugins: HashMap<&'static str, Arc<dyn ToolPlugin>>,
     order: Vec<&'static str>,
+    state: Option<Arc<crate::state::StateStore>>,
 }
 
 impl Registry {
+    pub fn with_state(mut self, state: Arc<crate::state::StateStore>) -> Self {
+        self.state = Some(state);
+        self
+    }
+
     pub fn new() -> Self {
         let mut registry = Self::default();
         for plugin in take_preinstalled() {
@@ -144,19 +154,113 @@ impl ToolDispatcher for Registry {
             .collect()
     }
 
+    fn instructions(&self) -> Option<String> {
+        self.state.as_ref().and_then(|state| state.resume())
+    }
+
     fn call_tool(
         &self,
         name: &str,
         arguments: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = CallToolResult> + Send + '_>> {
         match self.plugins.get(name) {
-            Some(plugin) => plugin.call(arguments),
+            Some(plugin) => {
+                let state = self.state.clone();
+                let summary = state
+                    .as_ref()
+                    .filter(|_| name != "brain_state")
+                    .map(|_| CallSummary::new(name, &arguments));
+                let started = std::time::Instant::now();
+                let tool_name = name.to_string();
+                let future = plugin.call(arguments);
+                Box::pin(async move {
+                    let result = future.await;
+                    if let (Some(state), Some(summary)) = (state, summary) {
+                        let ok = tool_ok(&tool_name, &result);
+                        let bytes = result.content.iter().map(|item| item.text.len()).sum();
+                        state.record_tool(crate::state::ToolRecord {
+                            tool: &summary.tool,
+                            target: summary.target.as_deref(),
+                            path: summary.path.as_deref(),
+                            symbol: summary.symbol.as_deref(),
+                            ok,
+                            ms: started.elapsed().as_millis() as u64,
+                            bytes,
+                        });
+                    }
+                    result
+                })
+            }
             None => {
                 let msg = format!("Unknown tool: {name}");
                 Box::pin(async move { CallToolResult::error(msg) })
             }
         }
     }
+}
+
+fn tool_ok(name: &str, result: &CallToolResult) -> bool {
+    if result.is_error == Some(true) {
+        return false;
+    }
+    if name != "brain_exec" {
+        return true;
+    }
+    let headline = result
+        .content
+        .first()
+        .map(|item| item.text.lines().next().unwrap_or(""))
+        .unwrap_or("");
+    !(headline.contains("saiu com código")
+        || headline.contains("tempo esgotado")
+        || headline.contains("falhou"))
+}
+
+struct CallSummary {
+    tool: String,
+    target: Option<String>,
+    path: Option<String>,
+    symbol: Option<String>,
+}
+
+impl CallSummary {
+    fn new(tool: &str, arguments: &serde_json::Value) -> Self {
+        let path = arg_str(arguments, "path");
+        let symbol = arg_str(arguments, "symbol");
+        let target = path
+            .clone()
+            .or_else(|| symbol.clone())
+            .or_else(|| arg_str(arguments, "target_symbol_or_file"))
+            .or_else(|| arg_str(arguments, "symbol_name"))
+            .or_else(|| arg_str(arguments, "natural_query"))
+            .or_else(|| arg_str(arguments, "query"))
+            .or_else(|| arg_str(arguments, "kind"))
+            .or_else(|| arg_str(arguments, "url"))
+            .or_else(|| keywords(arguments))
+            .map(|target| target.chars().take(160).collect());
+        Self {
+            tool: tool.to_string(),
+            target,
+            path,
+            symbol,
+        }
+    }
+}
+
+fn arg_str(arguments: &serde_json::Value, key: &str) -> Option<String> {
+    let value = arguments.get(key)?.as_str()?;
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn keywords(arguments: &serde_json::Value) -> Option<String> {
+    let values = arguments.get("keywords")?.as_array()?;
+    let joined = values
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!joined.is_empty()).then_some(joined)
 }
 
 #[cfg(test)]
@@ -229,5 +333,29 @@ mod tests {
         let reg = Registry::new();
         let out = reg.call_tool("nope", serde_json::json!({})).await;
         assert_eq!(out.is_error, Some(true));
+    }
+    #[test]
+    fn exec_failure_headline_is_not_ok() {
+        let result = CallToolResult {
+            content: vec![crate::protocol::ToolContent {
+                content_type: "text".to_string(),
+                text: "### `test` · 1 falharam, 5 passaram · saiu com código 101 · 1.0s\n"
+                    .to_string(),
+            }],
+            is_error: None,
+        };
+        assert!(!tool_ok("brain_exec", &result));
+    }
+
+    #[test]
+    fn exec_success_headline_is_ok() {
+        let result = CallToolResult {
+            content: vec![crate::protocol::ToolContent {
+                content_type: "text".to_string(),
+                text: "### `test` · 0 falharam, 5 passaram · ok · 0.4s\n".to_string(),
+            }],
+            is_error: None,
+        };
+        assert!(tool_ok("brain_exec", &result));
     }
 }

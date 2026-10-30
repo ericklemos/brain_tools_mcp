@@ -34,8 +34,66 @@ pub struct Entry {
     pub duration: Duration,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedSection {
+    heading: String,
+    body: String,
+    priority: u8,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedEntry {
+    kind: String,
+    key: String,
+    sections: Vec<PersistedSection>,
+    success: bool,
+    duration_ms: u64,
+}
+
+impl PersistedEntry {
+    fn from_entry(kind: &'static str, entry: &Entry) -> Self {
+        Self {
+            kind: kind.to_string(),
+            key: entry.key.clone(),
+            sections: entry
+                .sections
+                .iter()
+                .map(|section| PersistedSection {
+                    heading: section.heading.clone(),
+                    body: section.body.clone(),
+                    priority: section.priority,
+                })
+                .collect(),
+            success: entry.success,
+            duration_ms: entry.duration.as_millis() as u64,
+        }
+    }
+
+    fn into_entry(self) -> Option<(&'static str, Entry)> {
+        let kind = crate::runner::Kind::parse(&self.kind)?.as_str();
+        Some((
+            kind,
+            Entry {
+                key: self.key,
+                sections: self
+                    .sections
+                    .into_iter()
+                    .map(|section| Section {
+                        heading: section.heading,
+                        body: section.body,
+                        priority: section.priority,
+                    })
+                    .collect(),
+                success: self.success,
+                duration: Duration::from_millis(self.duration_ms),
+            },
+        ))
+    }
+}
+
 pub struct BuildCache {
     entries: std::sync::Mutex<BTreeMap<&'static str, Entry>>,
+    path: Option<std::path::PathBuf>,
 }
 
 impl Default for BuildCache {
@@ -48,6 +106,56 @@ impl BuildCache {
     pub fn new() -> Self {
         Self {
             entries: std::sync::Mutex::new(BTreeMap::new()),
+            path: None,
+        }
+    }
+
+    /// Loads a cache persisted by a previous process and saves after each
+    /// successful run. A missing or corrupt file is a cold cache, never an
+    /// error: build results are disposable.
+    pub fn with_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.path = Some(path.into());
+        self.load();
+        self
+    }
+
+    fn load(&self) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        let Ok(body) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(persisted) = serde_json::from_str::<Vec<PersistedEntry>>(&body) else {
+            return;
+        };
+        let mut entries = self.entries.lock().unwrap();
+        for entry in persisted {
+            if let Some((kind, entry)) = entry.into_entry() {
+                entries.insert(kind, entry);
+            }
+        }
+    }
+
+    fn save(&self) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        let entries = self.entries.lock().unwrap();
+        let persisted: Vec<PersistedEntry> = entries
+            .iter()
+            .map(|(kind, entry)| PersistedEntry::from_entry(kind, entry))
+            .collect();
+        drop(entries);
+        let Ok(body) = serde_json::to_vec(&persisted) else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, body).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
         }
     }
 
@@ -93,6 +201,7 @@ impl BuildCache {
             .lock()
             .unwrap()
             .insert(kind.as_str(), entry.clone());
+        self.save();
         (entry, false)
     }
 

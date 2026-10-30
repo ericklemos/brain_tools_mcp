@@ -34,11 +34,13 @@ pub struct ReadParams {
     pub budget_tokens: Option<usize>,
     /// `"allow"` asks for the body even if this session already received it.
     pub repeat: Option<String>,
+    /// Lê `rev:path` do repositório em vez da árvore de trabalho. Somente leitura.
+    pub rev: Option<String>,
 }
 
 /// A section plus what to tell the ledger once it is decided whether the
 /// section entered the response.
-struct Rendered {
+pub(crate) struct Rendered {
     section: Section,
     pending: Option<Pending>,
 }
@@ -76,79 +78,23 @@ impl ReadTool {
     }
 
     pub fn read(&self, params: ReadParams) -> CallToolResult {
-        let path = match self.resolve(&params.path) {
-            Some(path) => path,
-            None => {
-                return CallToolResult::error(format!(
-                    "Arquivo não encontrado ou fora do diretório raiz: {}",
-                    params.path
+        let (path, content, relative) = match self.prepare_read(&params) {
+            Ok(read) => read,
+            Err(message) => return CallToolResult::error(message),
+        };
+
+        let rendered = match self.render_read(&params, &path, &content, &relative) {
+            Ok(rendered) if !rendered.is_empty() => rendered,
+            Ok(_) => {
+                return CallToolResult::text(format!(
+                    "Símbolo `{}` não encontrado em `{relative}`.",
+                    params.symbol.as_deref().unwrap_or_default()
                 ))
             }
+            Err(e) => return CallToolResult::error(e.to_string()),
         };
 
-        let content = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(e) => return CallToolResult::error(format!("Falha ao ler {}: {e}", path.display())),
-        };
-
-        let relative = path
-            .strip_prefix(&self.root_dir)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-
-        // The outline is signatures, not bodies: it is never a repeat, so it
-        // never consults the ledger either.
-        let repeat_allowed = params.repeat.as_deref() == Some("allow");
-        let rendered = match &params.symbol {
-            Some(symbol) => match self.symbol_sections(
-                &path,
-                &content,
-                &relative,
-                symbol,
-                !repeat_allowed,
-            ) {
-                Ok(rendered) if !rendered.is_empty() => rendered,
-                Ok(_) => {
-                    return CallToolResult::text(format!(
-                        "Símbolo `{symbol}` não encontrado em `{relative}`."
-                    ))
-                }
-                Err(e) => return CallToolResult::error(e.to_string()),
-            },
-            None => self
-                .outline_sections(&path, &content, &relative)
-                .into_iter()
-                .map(|section| Rendered {
-                    section,
-                    pending: None,
-                })
-                .collect(),
-        };
-
-        let budget = params.budget_tokens.unwrap_or(self.default_budget_tokens);
-        // A symbol can be larger than the whole budget. Split before selection,
-        // so the head fits now and the tail goes to the store with a handle
-        // instead of being cut inside the code fence by the chunker.
-        let rendered: Vec<Rendered> = rendered
-            .into_iter()
-            .flat_map(|rendered| expand_over_budget(rendered, budget))
-            .collect();
-
-        let sections: Vec<Section> = rendered
-            .iter()
-            .map(|rendered| rendered.section.clone())
-            .collect();
-        let selection = budget::select(&sections, budget);
-        let handle = if selection.omitted.is_empty() {
-            None
-        } else {
-            Some(self.store.insert(selection.omitted_body()))
-        };
-
-        self.settle(&rendered, &selection);
-
-        CallToolResult::text(budget::render(&selection, handle.as_deref()))
+        self.finish_read(rendered, params.budget_tokens)
     }
 
     /// Records only what actually entered the response: a section that was cut
@@ -215,6 +161,50 @@ impl ReadTool {
     /// so the omission never becomes a dead end.
     fn live_handle(&self, ledger: &DeliveryLedger, seen: &Seen, path: &Path, id: &str) -> String {
         deliveries::live_handle(&self.store, ledger, seen, path, id)
+    }
+
+    /// Reads `rev:path` from the repository instead of the working tree, so a
+    /// deleted file or an old version has an owner other than `git cat-file`.
+    ///
+    /// The tool stays read-only: a revision is never editable through
+    /// `brain_edit`, and the content is hashed like any other read.
+    fn read_revision(
+        &self,
+        rev: &str,
+        requested: &str,
+    ) -> Result<(PathBuf, String, String), String> {
+        let relative = revision_path(requested)?;
+        if !is_valid_revision(rev) {
+            return Err(format!(
+                "Revisão inválida: `{rev}`. Use um commit, tag ou ref, como `HEAD`, `HEAD~1` ou `v0.3.0`."
+            ));
+        }
+
+        let spec = format!("{rev}:{relative}");
+        let output = std::process::Command::new("git")
+            .current_dir(&self.root_dir)
+            .args(["cat-file", "blob", &spec])
+            .output()
+            .map_err(|e| format!("Não foi possível executar git cat-file: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "`{spec}` não existe no repositório: {}",
+                stderr.trim()
+            ));
+        }
+
+        let content = String::from_utf8(output.stdout)
+            .map_err(|_| format!("`{spec}` não é UTF-8; brain_read só lê texto."))?;
+
+        // The chunker only needs the extension; the file itself need not exist
+        // in the working tree for a revision read.
+        Ok((
+            self.root_dir.join(&relative),
+            content,
+            format!("{relative} @ {rev}"),
+        ))
     }
 
     /// Rejects paths escaping the root: the tool reads files for the agent, it
@@ -287,6 +277,7 @@ impl ReadTool {
         content: &str,
         relative: &str,
         symbol: &str,
+        rev: Option<&str>,
         consult_ledger: bool,
     ) -> brain_kernel::Result<Vec<Rendered>> {
         let chunker = AstChunker::new();
@@ -333,6 +324,12 @@ impl ReadTool {
                     let id = match &span.container {
                         Some(container) => format!("{container}::{}", span.name),
                         None => span.name.clone(),
+                    };
+                    // A revision and the working tree are different deliveries
+                    // of the same path: never let one pass for the other.
+                    let id = match rev {
+                        Some(rev) => format!("{id} @ {rev}"),
+                        None => id,
                     };
                     let pending_now = Pending {
                         path: path.to_path_buf(),
@@ -381,6 +378,114 @@ impl ReadTool {
             })
             .collect())
     }
+
+    pub(crate) fn prepare_read(
+        &self,
+        params: &ReadParams,
+    ) -> Result<(PathBuf, String, String), String> {
+        match &params.rev {
+            Some(rev) => self.read_revision(rev, &params.path),
+            None => {
+                let path = self.resolve(&params.path).ok_or_else(|| {
+                    format!(
+                        "Arquivo não encontrado ou fora do diretório raiz: {}",
+                        params.path
+                    )
+                })?;
+                let content = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Falha ao ler {}: {e}", path.display()))?;
+                let relative = path
+                    .strip_prefix(&self.root_dir)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                Ok((path, content, relative))
+            }
+        }
+    }
+
+    pub(crate) fn render_read(
+        &self,
+        params: &ReadParams,
+        path: &Path,
+        content: &str,
+        relative: &str,
+    ) -> brain_kernel::Result<Vec<Rendered>> {
+        let repeat_allowed = params.repeat.as_deref() == Some("allow");
+        match &params.symbol {
+            Some(symbol) => self.symbol_sections(
+                path,
+                content,
+                relative,
+                symbol,
+                params.rev.as_deref(),
+                !repeat_allowed,
+            ),
+            None => Ok(self
+                .outline_sections(path, content, relative)
+                .into_iter()
+                .map(|section| Rendered {
+                    section,
+                    pending: None,
+                })
+                .collect()),
+        }
+    }
+
+    pub(crate) fn finish_read(
+        &self,
+        rendered: Vec<Rendered>,
+        budget_tokens: Option<usize>,
+    ) -> CallToolResult {
+        let budget = budget_tokens.unwrap_or(self.default_budget_tokens);
+        let rendered: Vec<Rendered> = rendered
+            .into_iter()
+            .flat_map(|rendered| expand_over_budget(rendered, budget))
+            .collect();
+
+        let sections: Vec<Section> = rendered
+            .iter()
+            .map(|rendered| rendered.section.clone())
+            .collect();
+        let selection = budget::select(&sections, budget);
+        let handle = if selection.omitted.is_empty() {
+            None
+        } else {
+            Some(self.store.insert(selection.omitted_body()))
+        };
+
+        self.settle(&rendered, &selection);
+
+        CallToolResult::text(budget::render(&selection, handle.as_deref()))
+    }
+}
+
+/// A revision name, not a range or an option: `HEAD~1`, `v0.3.0`, a commit.
+fn is_valid_revision(rev: &str) -> bool {
+    !rev.is_empty()
+        && !rev.starts_with('-')
+        && !rev.contains(':')
+        && !rev.contains("..")
+        && !rev.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Revision reads never touch the filesystem, but a path that escapes the root
+/// would still be misleading: keep it relative and inside the project.
+fn revision_path(requested: &str) -> Result<String, String> {
+    let candidate = Path::new(requested);
+    let inside = !candidate.is_absolute()
+        && candidate.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+    if !inside || requested.trim().is_empty() {
+        return Err(format!(
+            "Caminho inválido para leitura em revisão: {requested}"
+        ));
+    }
+    Ok(candidate.to_string_lossy().into_owned())
 }
 
 /// Splits a rendered section that alone exceeds the budget, cloning the
@@ -420,7 +525,7 @@ impl ToolPlugin for ReadTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "brain_read".to_string(),
-            description: "Esqueleto do arquivo ou corpo de um símbolo, com blake3 para `brain_edit`.".to_string(),
+            description: "Esqueleto do arquivo ou corpo de um símbolo, na árvore de trabalho ou em `rev:path`, com blake3 para `brain_edit`.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -431,6 +536,10 @@ impl ToolPlugin for ReadTool {
                     "symbol": {
                         "type": "string",
                         "description": "Opcional: nome exato da função/struct cujo corpo será devolvido."
+                    },
+                    "rev": {
+                        "type": "string",
+                        "description": "Opcional: lê `rev:path` (commit, tag ou ref, como `HEAD~1`) em vez da árvore de trabalho. Somente leitura: o hash devolvido não serve para `brain_edit`."
                     },
                     "budget_tokens": {
                         "type": "integer",
@@ -489,6 +598,7 @@ mod tests {
             symbol: Some(symbol.to_string()),
             budget_tokens: None,
             repeat: repeat.map(str::to_string),
+            rev: None,
         })
         .content[0]
             .text
@@ -574,6 +684,7 @@ mod tests {
                     symbol: None,
                     budget_tokens: None,
                     repeat: None,
+                    rev: None,
                 })
                 .content[0]
                 .text
@@ -605,6 +716,7 @@ mod tests {
             symbol: Some("long_fn".to_string()),
             budget_tokens: Some(4000),
             repeat: None,
+            rev: None,
         });
         let text = &out.content[0].text;
         assert!(text.contains("let v119"), "the last line must be present: {text}");
@@ -627,6 +739,7 @@ mod tests {
             symbol: Some("long_fn".to_string()),
             budget_tokens: Some(300),
             repeat: None,
+            rev: None,
         });
         let text = &out.content[0].text;
         assert!(text.contains("parte 1/"), "{text}");
@@ -660,6 +773,7 @@ mod tests {
             symbol: None,
             budget_tokens: None,
             repeat: None,
+            rev: None,
         });
         let text = &out.content[0].text;
 
@@ -687,6 +801,7 @@ mod tests {
             symbol: Some("verify_token".to_string()),
             budget_tokens: None,
             repeat: None,
+            rev: None,
         });
         let text = &out.content[0].text;
 
@@ -703,6 +818,7 @@ mod tests {
             symbol: Some("nope".to_string()),
             budget_tokens: None,
             repeat: None,
+            rev: None,
         });
 
         assert!(out.content[0].text.contains("não encontrado"));
@@ -717,6 +833,7 @@ mod tests {
             symbol: None,
             budget_tokens: None,
             repeat: None,
+            rev: None,
         });
 
         assert_eq!(out.is_error, Some(true));
@@ -731,6 +848,7 @@ mod tests {
             symbol: None,
             budget_tokens: None,
             repeat: None,
+            rev: None,
         });
 
         assert_eq!(out.is_error, Some(true));
@@ -748,6 +866,7 @@ mod tests {
             symbol: None,
             budget_tokens: None,
             repeat: None,
+            rev: None,
         });
         assert!(out.content[0].text.contains(&expected), "{}", out.content[0].text);
     }
@@ -761,6 +880,7 @@ mod tests {
             symbol: Some("verify_token".to_string()),
             budget_tokens: None,
             repeat: None,
+            rev: None,
         });
         assert!(out.content[0].text.contains(":1-3`"), "{}", out.content[0].text);
     }
@@ -783,6 +903,7 @@ mod tests {
                 symbol: Some("long_fn".to_string()),
                 budget_tokens: Some(budget),
                 repeat: None,
+                rev: None,
             })
             .content[0]
             .text
@@ -798,4 +919,111 @@ mod tests {
         );
     }
 
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.email=brain@example.com", "-c", "user.name=brain"])
+            .args(args)
+            .output()
+            .expect("git must run");
+        assert!(
+            output.status.success(),
+            "git {args:?} falhou: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// HEAD holds the original `auth.rs`; the working tree holds an edited copy.
+    fn repository() -> tempfile::TempDir {
+        let dir = fixture();
+        git_ok(dir.path(), &["init", "-q"]);
+        git_ok(dir.path(), &["add", "."]);
+        git_ok(dir.path(), &["commit", "-qm", "first"]);
+        fs::write(
+            dir.path().join("auth.rs"),
+            "pub fn verify_token(raw: &str) -> bool {\n    raw.len() > 2\n}\n\npub fn logout() {\n}\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    fn read_rev(tool: &ReadTool, rev: &str, symbol: Option<&str>) -> String {
+        tool.read(ReadParams {
+            path: "auth.rs".to_string(),
+            symbol: symbol.map(str::to_string),
+            budget_tokens: None,
+            repeat: None,
+            rev: Some(rev.to_string()),
+        })
+        .content[0]
+            .text
+            .clone()
+    }
+
+    #[test]
+    fn reads_a_revision_instead_of_the_worktree() {
+        let dir = repository();
+        let tool = tool_for(dir.path());
+
+        let text = read_rev(&tool, "HEAD", Some("verify_token"));
+        assert!(text.contains("!raw.is_empty()"), "{text}");
+        assert!(
+            !text.contains("raw.len() > 2"),
+            "the working tree must not win: {text}"
+        );
+        assert!(
+            text.contains("@ HEAD"),
+            "the header must name the revision: {text}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_revision_is_a_categorical_error() {
+        let dir = repository();
+        let tool = tool_for(dir.path());
+
+        let out = tool.read(ReadParams {
+            path: "auth.rs".to_string(),
+            symbol: None,
+            budget_tokens: None,
+            repeat: None,
+            rev: Some("no-such-rev".to_string()),
+        });
+        assert_eq!(out.is_error, Some(true));
+        assert!(
+            out.content[0].text.contains("não existe"),
+            "{}",
+            out.content[0].text
+        );
+    }
+
+    #[test]
+    fn a_revision_read_never_collides_with_the_worktree_read() {
+        let dir = repository();
+        let ledger = Arc::new(DeliveryLedger::new(64, 1 << 20));
+        let (tool, _) = tool_with_ledger(dir.path(), ledger);
+
+        let worktree = read_symbol(&tool, "verify_token", None);
+        assert!(worktree.contains("raw.len() > 2"), "{worktree}");
+
+        let revision = read_rev(&tool, "HEAD", Some("verify_token"));
+        assert!(!revision.contains("Já entregue"), "{revision}");
+        assert!(!revision.contains("Mudou desde a entrega"), "{revision}");
+        assert!(revision.contains("!raw.is_empty()"), "{revision}");
+    }
+
+    #[test]
+    fn a_rev_path_outside_the_root_is_rejected() {
+        let dir = repository();
+        let tool = tool_for(dir.path());
+
+        let out = tool.read(ReadParams {
+            path: "../../etc/passwd".to_string(),
+            symbol: None,
+            budget_tokens: None,
+            repeat: None,
+            rev: Some("HEAD".to_string()),
+        });
+        assert_eq!(out.is_error, Some(true));
+    }
 }

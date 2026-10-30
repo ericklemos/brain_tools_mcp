@@ -2,6 +2,13 @@
 
 Servidor MCP local, escrito em Rust, para **ler, entender e editar código com menos tokens**. Em vez de despejar arquivos inteiros, o `brain-tools` devolve o recorte que importa: o corpo de um símbolo, o esqueleto de um arquivo, quem chama quem, o impacto de uma mudança, o erro agrupado de um build.
 
+O objetivo é a economia de tokens, mas não só ela. A ferramenta também faz
+**seleção inteligente de conteúdo**: repassa ao agente o que de fato responde à
+pergunta — o símbolo certo, o chamador que quebra, o erro que importa — e deixa
+o resto fora do contexto. Menos tokens é consequência de um contexto melhor
+filtrado, mais bem construído e mais centrado, que reduz distração e erro de
+atenção do modelo.
+
 O contrato central do projeto:
 
 > O resultado de uma ferramenta **é** a leitura do arquivo: trecho verbatim, com `path:start-end` e hash. Não é um resumo que precisa ser conferido depois.
@@ -35,6 +42,7 @@ Características principais:
 - **Grafo de chamadas** com resolução de escopo entre arquivos e crates.
 - **Edição por span de AST**, com hash do arquivo para evitar escrita em conteúdo obsoleto.
 - **Build/testes agrupados**, com cache e parser de diagnóstico do Cargo.
+- **Contexto filtrado**: entrega o recorte que responde à pergunta — símbolo, chamador, impacto, erro — em vez do arquivo inteiro.
 - **Orçamento de tokens** por resposta; o excedente fica recuperável via `brain_peek`.
 - **Ledger de entregas**: o mesmo corpo não é enviado duas vezes na mesma sessão.
 - **Guarda do shell**: recusa comandos que outra ferramenta já cobre.
@@ -181,6 +189,7 @@ O perfil controla o que é **registrado** no MCP. Uma ferramenta fora do perfil 
 |---|:---:|:---:|:---:|
 | `brain_search` | sim | sim | sim |
 | `brain_read` | sim | sim | sim |
+| `brain_read_many` | sim | sim | sim |
 | `brain_map` | sim | sim | sim |
 | `brain_context_graph` | sim | sim | sim |
 | `brain_impact_check` | sim | sim | sim |
@@ -190,6 +199,7 @@ O perfil controla o que é **registrado** no MCP. Uma ferramenta fora do perfil 
 | `brain_why` | sim | — | sim |
 | `brain_edit` | sim | sim | — |
 | `brain_write` | sim | sim | — |
+| `brain_write_many` | sim | sim | — |
 | `brain_patch` | sim | sim | — |
 | `brain_exec` | sim | sim | — |
 | `brain_shell` | sim | — | — |
@@ -258,7 +268,8 @@ O ranking atual é **lexical**, não semântico. O campo `min_confidence` contin
 | Ferramenta | Para quê | Substitui |
 |---|---|---|
 | `brain_search` | Encontrar código por termos e devolver corpos verbatim. | `grep`, `rg`, `ag`, `ack` |
-| `brain_read` | Ler o esqueleto de um arquivo ou o corpo de um símbolo. | `cat`, `head`, `tail`, `sed`, `awk`, `cut` |
+| `brain_read` | Ler o esqueleto de um arquivo ou o corpo de um símbolo, no worktree ou em `rev:path`. | `cat`, `head`, `tail`, `sed`, `awk`, `cut`, `git cat-file <rev>:<path>` |
+| `brain_read_many` | Ler vários arquivos ou símbolos num lote, com um orçamento único. | várias chamadas de `brain_read` |
 | `brain_map` | Ver a estrutura do projeto por centralidade. | `find`, `ls`, `tree`, `fd` |
 | `brain_context_graph` | Ver quem chama e o que o símbolo consome. | leitura manual de chamadores |
 | `brain_impact_check` | Ver o que quebra se a assinatura mudar. | `grep` reverso |
@@ -268,6 +279,7 @@ O ranking atual é **lexical**, não semântico. O campo `min_confidence` contin
 | `brain_why` | Ver o histórico git de um símbolo. | `git log -L`, `git blame` |
 | `brain_edit` | Editar o corpo de um símbolo por span de AST. | `Edit` + leitura manual |
 | `brain_write` | Criar ou substituir um arquivo inteiro. | `Write` |
+| `brain_write_many` | Gravar vários arquivos como um lote atômico. | várias chamadas de `Write` |
 | `brain_patch` | Aplicar um diff unificado com verificação prévia. | `git apply`, `patch` |
 | `brain_exec` | Rodar `cargo build/check/test/clippy` e agrupar erros. | `cargo build`, `cargo test` |
 | `brain_shell` | Rodar git, formatador e ferramenta externa. | `shell` |
@@ -317,11 +329,14 @@ Lê o **esqueleto** do arquivo (assinaturas) ou o **corpo** de um símbolo.
 | Nome | Tipo | Descrição |
 |---|---|---|
 | `path` | string | Caminho relativo ao root. |
+| `rev` | string | Lê `rev:path` (commit, tag ou ref, como `HEAD~1`) em vez da árvore de trabalho. Somente leitura. |
 | `symbol` | string | Nome simples (`verify_token`) ou qualificado (`AuthService::verify_token`). |
 | `repeat` | `allow` | Força a reentrega do corpo. |
 | `budget_tokens` | inteiro | Teto de tokens. |
 
 Sem `symbol`, devolve o esqueleto do arquivo. Com `symbol`, devolve só o corpo e o span exato.
+
+Com `rev`, o conteúdo vem do repositório e não do worktree: serve para arquivo deletado ou versão antiga, e o hash devolvido não vale para `brain_edit`.
 
 #### `brain_map`
 
@@ -572,10 +587,13 @@ O `brain_shell` é o único caminho para processos. A guarda vem **ligada por pa
 | `patch` | `brain_patch` |
 | `git grep` | `brain_search` |
 | `git diff`, `git show` | `brain_diff` |
+| `git cat-file <rev>:<path>`, `git show <rev>:<path>` | `brain_read` com `rev` |
 | `git blame`, `git log -L` | `brain_why` |
 | `git apply` | `brain_patch` |
 | `git ls-files`, `git ls-tree` | `brain_map` |
 | `cargo build`, `cargo check`, `cargo test`, `cargo clippy` | `brain_exec` |
+| `python3 -c`, `node -e`, `perl -e`, `ruby -e`, `php -r` (código inline) | `brain_read` ou `brain_search` |
+| `python3 - <<EOF`, `bash <<EOF` (código por heredoc) | `brain_edit` |
 
 Além dos programas, a guarda recusa **redirecionamentos para arquivo** (exceto `/dev/null` e duplicação de descritor). Um `> arquivo` é tratado como escrita e aponta para `brain_write`.
 
@@ -584,12 +602,14 @@ Além dos programas, a guarda recusa **redirecionamentos para arquivo** (exceto 
 - `git status`, `git log`, `git add`, `git commit` e outros subcomandos não listados.
 - `cargo fmt`, `cargo metadata`, `cargo tree`.
 - Ferramentas externas não cobertas, como `rustc`, `jq`, `curl`, `openssl`.
+- Scripts a partir de arquivo (`python3 tools/build.py`), que continuam sendo ferramenta externa.
 
 ### Como a guarda analisa
 
 - Divide pipelines e verifica **cada segmento**.
 - Desembrulha wrappers e shells aninhados (`bash -c`, `env`, `sudo`, etc.).
 - Lê subcomandos de `git` e `cargo` depois das opções globais.
+- Recusa código inline em interpretador pela **forma**, não pelo conteúdo: `python3 -c`, `node -e`, `perl -r` e heredoc (`python3 - <<EOF`). Nenhuma lista de pistas sobrevive a ofuscação, então a regra é categórica.
 - `wc` sem arquivo é permitido, porque é só um consumidor de pipe.
 
 ### Desligar
@@ -600,7 +620,7 @@ brain-tools --shell-guard false
 BRAIN_SHELL_GUARD=false brain-tools
 ~~~
 
-Desligar a guarda não é recomendado em uso normal. A guarda é uma regra de comportamento, **não um sandbox**: ela não impede `rm`, não inspeciona o conteúdo de scripts passados a interpretadores e não substitui permissões do host.
+Desligar a guarda não é recomendado em uso normal. A guarda é uma regra de comportamento, **não um sandbox**: ela não impede `rm`, não inspeciona scripts executados a partir de arquivo nem código passado de forma indireta (base64 para `sh`, `eval` construído em runtime), e não substitui permissões do host.
 
 ### Log de uso
 
